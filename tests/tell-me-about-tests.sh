@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 #
-# Test suite for git-commit-analyzer.sh
+# Test suite for tell-me-about.sh
 #
 
 setup_file() {
@@ -10,7 +10,7 @@ setup_file() {
 		exit 1
 	fi
 
-	SCRIPT="$GIT_ROOT/git-commit-analyzer.sh"
+	SCRIPT="$GIT_ROOT/tell-me-about.sh"
 	if [[ ! -f "$SCRIPT" ]]; then
 		echo "Script not found: $SCRIPT" >&2
 		exit 1
@@ -25,6 +25,9 @@ setup_file() {
 setup() {
 	TEST_DIR=$(mktemp -d)
 	export TEST_DIR
+
+	# Set trap handler for cleanup on exit/error
+	trap 'rm -rf "$TEST_DIR"' EXIT ERR
 
 	return 0
 }
@@ -126,7 +129,8 @@ create_test_repo() {
 	echo "$output" | grep -q "Output written to directory:"
 
 	# Verify output directory and page file created
-	local repo_name=$(basename "$TEST_DIR")
+	local repo_name
+	repo_name=$(basename "$TEST_DIR")
 	local base_dir="$HOME/tellmeaboutatimewhen/${repo_name}_master_author_one"
 	[[ -d "$base_dir" ]]
 
@@ -181,7 +185,8 @@ create_test_repo() {
 
 	[[ "$status" -eq 0 ]]
 
-	local repo_name=$(basename "$TEST_DIR")
+	local repo_name
+	repo_name=$(basename "$TEST_DIR")
 	local base_dir="$HOME/tellmeaboutatimewhen/${repo_name}_master_author_one"
 	[[ -d "$base_dir" ]]
 
@@ -211,7 +216,8 @@ create_test_repo() {
 	echo "$output" | grep -q "Commit count:"
 	echo "$output" | grep -q "Output written to directory:"
 
-	local repo_name=$(basename "$TEST_DIR")
+	local repo_name
+	repo_name=$(basename "$TEST_DIR")
 	local base_dir="$HOME/tellmeaboutatimewhen/${repo_name}_master_author_one"
 	[[ -d "$base_dir" ]]
 
@@ -260,7 +266,8 @@ create_test_repo() {
 	echo "$output" | grep -q "Output written to directory:"
 
 	# When page_size defaults to 0, all commits go to one page file
-	local repo_name=$(basename "$TEST_DIR")
+	local repo_name
+	repo_name=$(basename "$TEST_DIR")
 	local base_dir="$HOME/tellmeaboutatimewhen/${repo_name}_master_author_one"
 	[[ -d "$base_dir" ]]
 
@@ -285,7 +292,8 @@ create_test_repo() {
 	echo "$output" | grep -q "Output written to directory:"
 
 	# Explicit page_size=0 should write all commits to one page file
-	local repo_name=$(basename "$TEST_DIR")
+	local repo_name
+	repo_name=$(basename "$TEST_DIR")
 	local base_dir="$HOME/tellmeaboutatimewhen/${repo_name}_master_author_one"
 	[[ -d "$base_dir" ]]
 
@@ -322,7 +330,8 @@ create_test_repo() {
 	# Verify no second page file exists
 	[[ $(find "$output_dir" -name "page_2_*.txt" -type f 2>/dev/null | wc -l) -eq 0 ]]
 
-	local commit_count_p1=$(grep -c "Commit by author1" "${page_files[0]}")
+	local commit_count_p1
+	commit_count_p1=$(grep -c "Commit by author1" "${page_files[0]}")
 	[[ $commit_count_p1 -eq 1 ]]
 
 	rm -rf "$output_dir"
@@ -365,7 +374,8 @@ create_test_repo() {
 	# Verify directory follows format: {repo}_{branch}_{author}/{timestamp}
 	local output_dir
 	output_dir=$(echo "$output" | grep "Output written to directory:" | sed 's/.*directory: //')
-	local dirname=$(basename "$(dirname "$output_dir")")
+	local dirname
+	dirname=$(basename "$(dirname "$output_dir")")
 
 	echo "$dirname" | grep -q "_master_"
 	echo "$dirname" | grep -q "_author_one$"
@@ -393,7 +403,8 @@ create_test_repo() {
 	# Verify no second page file exists
 	[[ $(find "$output_dir" -name "page_2_*.txt" -type f 2>/dev/null | wc -l) -eq 0 ]]
 
-	local commit_count=$(grep -c "Initial commit" "${page_files[0]}")
+	local commit_count
+	commit_count=$(grep -c "Initial commit" "${page_files[0]}")
 	[[ $commit_count -eq 1 ]]
 
 	rm -rf "$output_dir"

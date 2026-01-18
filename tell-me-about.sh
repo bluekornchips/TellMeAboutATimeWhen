@@ -6,7 +6,7 @@
 
 usage() {
 	cat <<EOF
-Usage: $(basename "$0") -p <path> -b <branch> -a <author> [--page-size <number>] [--range <date> | --range <start_date> <end_date>]
+Usage: $(basename "$0") -p <path> -b <branch> -a <author> [--page-size <number>] [--range <date> | --range <start_date> <end_date>] [--github]
 
 Analyze git commits by author and save detailed information to a file.
 
@@ -16,6 +16,7 @@ Options:
   -a <author>         : Author of commits (required)
   --page-size <number>: Number of commits per output file (0 for single file, default: 0)
   --range <date>      : Analyze commits since date (one arg) or between two dates (two args)
+  --github            : Include GitHub details for commits, such as pull request information (requires GitHub CLI)
   -h, --help          : Show this help message
 
 EOF
@@ -115,7 +116,9 @@ validate_author_exists() {
 	fi
 
 	# Also check that we actually got output, git log succeeds even with no results
-	if [[ -z $(git log --author="$author" --max-count=1 --oneline 2>/dev/null) ]]; then
+	local author_output
+	author_output=$(git log --author="$author" --max-count=1 --oneline 2>/dev/null)
+	if [[ -z "$author_output" ]]; then
 		echo "validate_author_exists:: Author '$author' not found in the commit history" >&2
 		return 1
 	fi
@@ -161,6 +164,24 @@ validate_page_size() {
 	return 0
 }
 
+# Check if GitHub CLI (gh) is installed and authenticated
+#
+# Side Effects:
+# - None
+check_gh_cli() {
+	if ! command -v gh >/dev/null 2>&1; then
+		echo "check_gh_cli:: GitHub CLI (gh) is not installed" >&2
+		return 1
+	fi
+
+	if ! gh auth status >/dev/null 2>&1; then
+		echo "check_gh_cli:: GitHub CLI is not authenticated. Run 'gh auth login'" >&2
+		return 1
+	fi
+
+	return 0
+}
+
 # Determine period start and end dates for filename
 #
 # Inputs:
@@ -175,16 +196,34 @@ determine_period_dates() {
 
 	if [[ -n "$range_date1" && -n "$range_date2" ]]; then
 		# Two dates provided: between range_date1 and range_date2
-		PERIOD_START=$(date -d "$range_date1" +%Y-%m-%d)
-		PERIOD_END=$(date -d "$range_date2" +%Y-%m-%d)
+		if ! PERIOD_START=$(date -d "$range_date1" +%Y-%m-%d 2>/dev/null); then
+			echo "determine_period_dates:: Failed to parse date: $range_date1" >&2
+			return 1
+		fi
+		if ! PERIOD_END=$(date -d "$range_date2" +%Y-%m-%d 2>/dev/null); then
+			echo "determine_period_dates:: Failed to parse date: $range_date2" >&2
+			return 1
+		fi
 	elif [[ -n "$range_date1" ]]; then
 		# One date provided: since range_date1 to now
-		PERIOD_START=$(date -d "$range_date1" +%Y-%m-%d)
-		PERIOD_END=$(date +%Y-%m-%d)
+		if ! PERIOD_START=$(date -d "$range_date1" +%Y-%m-%d 2>/dev/null); then
+			echo "determine_period_dates:: Failed to parse date: $range_date1" >&2
+			return 1
+		fi
+		if ! PERIOD_END=$(date +%Y-%m-%d 2>/dev/null); then
+			echo "determine_period_dates:: Failed to get current date" >&2
+			return 1
+		fi
 	else
 		# No dates provided: 1 week ago to now
-		PERIOD_START=$(date -d "1 week ago" +%Y-%m-%d)
-		PERIOD_END=$(date +%Y-%m-%d)
+		if ! PERIOD_START=$(date -d "1 week ago" +%Y-%m-%d 2>/dev/null); then
+			echo "determine_period_dates:: Failed to calculate date one week ago" >&2
+			return 1
+		fi
+		if ! PERIOD_END=$(date +%Y-%m-%d 2>/dev/null); then
+			echo "determine_period_dates:: Failed to get current date" >&2
+			return 1
+		fi
 	fi
 
 	return 0
@@ -231,17 +270,106 @@ get_commits() {
 	return 0
 }
 
+# Get pull request details for a commit using GitHub CLI
+#
+# Inputs:
+# - $1: commit_hash
+#
+# Side Effects:
+# - Outputs PR details to stdout
+get_pr_details() {
+	local commit="$1"
+
+	# Get full commit hash
+	local full_hash
+	full_hash=$(git rev-parse "$commit" 2>/dev/null)
+	if [[ -z "$full_hash" ]]; then
+		return 1
+	fi
+
+	# Get repository owner and name
+	local repo_info
+	repo_info=$(gh repo view --json owner,name 2>/dev/null)
+	if [[ -z "$repo_info" ]]; then
+		return 1
+	fi
+
+	local repo_owner
+	local repo_name
+	if ! repo_owner=$(echo "$repo_info" | jq -r '.owner.login' 2>/dev/null); then
+		return 1
+	fi
+	if ! repo_name=$(echo "$repo_info" | jq -r '.name' 2>/dev/null); then
+		return 1
+	fi
+
+	if [[ -z "$repo_owner" ]] || [[ -z "$repo_name" ]]; then
+		return 1
+	fi
+
+	# Query GitHub API for PRs containing this commit
+	local pr_list
+	pr_list=$(gh api "/repos/${repo_owner}/${repo_name}/commits/${full_hash}/pulls" 2>/dev/null)
+
+	if [[ -z "$pr_list" ]] || [[ "$pr_list" == "[]" ]] || [[ "$pr_list" == "null" ]]; then
+		return 1
+	fi
+
+	# Extract PR numbers and get details for each
+	local pr_numbers
+	if ! pr_numbers=$(echo "$pr_list" | jq -r '.[].number' 2>/dev/null); then
+		return 1
+	fi
+	if [[ -z "$pr_numbers" ]]; then
+		return 1
+	fi
+
+	cat <<EOF
+
+Pull Request Details
+========================================
+
+EOF
+	while read -r pr_number; do
+		if [[ -n "$pr_number" ]]; then
+			local pr_details
+			if ! pr_details=$(gh pr view "$pr_number" --json number,title,url,state,mergedAt,createdAt,body 2>/dev/null); then
+				continue
+			fi
+			if [[ -n "$pr_details" ]]; then
+				if ! echo "$pr_details" | jq -r '
+					"PR #\(.number): \(.title)",
+					"URL: \(.url)",
+					"State: \(.state)",
+					"Created: \(.createdAt)",
+					(if .mergedAt then "Merged: \(.mergedAt)" else empty end),
+					"",
+					"Description:",
+					.body,
+					"---"
+				' 2>/dev/null; then
+					continue
+				fi
+			fi
+		fi
+	done <<<"$pr_numbers"
+
+	return 0
+}
+
 # Write commit details to output file
 #
 # Inputs:
 # - $1: commit_hash
 # - $2: output_file
+# - $3: check_github (optional, "true" to include GitHub details)
 #
 # Side Effects:
 # - Appends to the output file
 write_commit_details() {
 	local commit="$1"
 	local output_file="$2"
+	local check_github="${3:-false}"
 
 	if ! git log -p --format="%B" -n 1 "$commit" >>"$output_file" 2>/dev/null; then
 		echo "write_commit_details:: Warning: Failed to get commit details for $commit" >&2
@@ -249,6 +377,12 @@ write_commit_details() {
 
 	if ! git diff-tree --no-commit-id --name-only -r "$commit" >>"$output_file" 2>/dev/null; then
 		echo "write_commit_details:: Warning: Failed to get changed files for $commit" >&2
+	fi
+
+	if [[ "$check_github" == "true" ]]; then
+		if get_pr_details "$commit" >>"$output_file" 2>/dev/null; then
+			echo "" >>"$output_file"
+		fi
 	fi
 
 	return 0
@@ -259,12 +393,14 @@ write_commit_details() {
 # Inputs:
 # - $1: output_path (directory containing page files)
 # - $2: page_size, 0 means all commits in one page
+# - $3: check_github (optional, "true" to include GitHub details)
 #
 # Side Effects:
 # - Creates page files in the output directory
 process_commits() {
 	local output_path="$1"
 	local page_size="$2"
+	local check_github="${3:-false}"
 	local commit_count=0
 	local page_number=1
 	local current_file=""
@@ -309,7 +445,7 @@ process_commits() {
 			# Write all commits in page to final filename
 			current_file="$output_path/page_${page_number}_${first_commit_hash:0:7}_${last_commit_hash:0:7}.txt"
 			for page_commit in "${page_commits[@]}"; do
-				write_commit_details "$page_commit" "$current_file"
+				write_commit_details "$page_commit" "$current_file" "$check_github"
 			done
 			# Start new page if current page is full, but not if it's just the last commit
 			if [[ "$page_size" -gt 0 ]] && [[ $commits_in_page -eq "$page_size" ]]; then
@@ -325,12 +461,16 @@ process_commits() {
 
 # Main entry point
 main() {
+	# Set trap handler for cleanup on exit/error
+	trap 'popd >/dev/null 2>&1 || true' EXIT ERR
+
 	local repo_path=""
 	local branch=""
 	local author=""
 	local range_date1=""
 	local range_date2=""
 	local page_size=0
+	local check_github=false
 
 	while [[ $# -gt 0 ]]; do
 		case $1 in
@@ -371,6 +511,10 @@ main() {
 			page_size="$2"
 			shift 2
 			;;
+		--github)
+			check_github=true
+			shift
+			;;
 		*)
 			echo "main:: Unknown option '$1'" >&2
 			echo "main:: Use '$(basename "$0") --help' for usage information" >&2
@@ -378,6 +522,14 @@ main() {
 			;;
 		esac
 	done
+
+	# Check for jq if GitHub features are requested
+	if [[ "$check_github" == "true" ]]; then
+		if ! command -v jq >/dev/null 2>&1; then
+			echo "main:: jq is required for --github option but is not installed" >&2
+			return 1
+		fi
+	fi
 
 	# Validate required arguments
 	if ! validate_required_args "$repo_path" "$branch" "$author"; then
@@ -425,6 +577,14 @@ main() {
 		return 1
 	fi
 
+	# Validate GitHub CLI if GitHub details are requested
+	if [[ "$check_github" == "true" ]]; then
+		if ! check_gh_cli; then
+			popd >/dev/null || return 1
+			return 1
+		fi
+	fi
+
 	# Determine period dates for output filenames
 	determine_period_dates "$range_date1" "$range_date2"
 
@@ -439,18 +599,31 @@ main() {
 	if [[ -z "$COMMITS" ]]; then
 		commit_count=0
 	else
-		commit_count=$(echo "$COMMITS" | wc -l)
+		if ! commit_count=$(echo "$COMMITS" | wc -l); then
+			echo "main:: Warning: Failed to count commits" >&2
+			commit_count=0
+		fi
 	fi
 	echo "main:: Commit count: $commit_count"
 
 	local sanitized_author
-	sanitized_author=$(echo "$author" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/_/g')
+	if ! sanitized_author=$(echo "$author" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/_/g'); then
+		echo "main:: Warning: Failed to sanitize author name" >&2
+		sanitized_author=$(echo "$author" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/_/g' || echo "unknown_author")
+	fi
 	local sanitized_branch
-	sanitized_branch=$(tr -c 'a-zA-Z0-9_-' '_' <<<"$branch" | sed 's/_$//')
+	if ! sanitized_branch=$(tr -c 'a-zA-Z0-9_-' '_' <<<"$branch" | sed 's/_$//'); then
+		echo "main:: Warning: Failed to sanitize branch name" >&2
+		sanitized_branch=$(tr -c 'a-zA-Z0-9_-' '_' <<<"$branch" | sed 's/_$//' || echo "unknown_branch")
+	fi
 
 	# Generate timestamp for this run
 	local timestamp
-	timestamp=$(date +%Y%m%d_%H%M%S)
+	if ! timestamp=$(date +%Y%m%d_%H%M%S 2>/dev/null); then
+		echo "main:: Failed to generate timestamp" >&2
+		popd >/dev/null || return 1
+		return 1
+	fi
 
 	local repo_params="${REPO_NAME}_${sanitized_branch}_${sanitized_author}"
 	local output_path="$OUTPUT_DIR/${repo_params}/${timestamp}"
@@ -463,10 +636,10 @@ main() {
 	fi
 
 	# Process commits
-	process_commits "$output_path" "$page_size"
+	process_commits "$output_path" "$page_size" "$check_github"
 
-	# Restore original directory
-	popd >/dev/null || return 1
+	# Restore original directory (trap handler will also do this, but explicit is clearer)
+	popd >/dev/null || true
 
 	echo "main:: Output written to directory: $output_path"
 	return 0
