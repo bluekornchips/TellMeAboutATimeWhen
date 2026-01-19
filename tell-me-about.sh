@@ -24,6 +24,17 @@ EOF
 
 OUTPUT_DIR="$HOME/tellmeaboutatimewhen"
 
+# Get script directory for locating tools
+SCRIPT_DIR=""
+if [[ -n "${BASH_SOURCE[0]}" ]]; then
+	script_path="${BASH_SOURCE[0]}"
+	if [[ -L "$script_path" ]]; then
+		script_path=$(readlink -f "$script_path" 2>/dev/null || echo "$script_path")
+	fi
+	SCRIPT_DIR=$(dirname "$script_path")
+	export SCRIPT_DIR
+fi
+
 # Validation functions and configuration setup
 # Validate that required arguments are provided
 #
@@ -174,8 +185,21 @@ check_gh_cli() {
 		return 1
 	fi
 
+	local gh_config_dir
+	local hosts_file
+	if [[ -n "${GH_CONFIG_DIR:-}" ]]; then
+		gh_config_dir="$GH_CONFIG_DIR"
+	else
+		gh_config_dir="${HOME}/.config/gh"
+	fi
+	hosts_file="${gh_config_dir}/hosts.yml"
+
 	if ! gh auth status >/dev/null 2>&1; then
-		echo "check_gh_cli:: GitHub CLI is not authenticated. Run 'gh auth login'" >&2
+		if [[ ! -f "$hosts_file" ]]; then
+			echo "check_gh_cli:: No GitHub CLI hosts file at $hosts_file" >&2
+		fi
+		echo "check_gh_cli:: GitHub CLI is not authenticated" >&2
+		echo "check_gh_cli:: Run 'gh auth login' once or set GH_TOKEN or GITHUB_TOKEN" >&2
 		return 1
 	fi
 
@@ -270,93 +294,6 @@ get_commits() {
 	return 0
 }
 
-# Get pull request details for a commit using GitHub CLI
-#
-# Inputs:
-# - $1: commit_hash
-#
-# Side Effects:
-# - Outputs PR details to stdout
-get_pr_details() {
-	local commit="$1"
-
-	# Get full commit hash
-	local full_hash
-	full_hash=$(git rev-parse "$commit" 2>/dev/null)
-	if [[ -z "$full_hash" ]]; then
-		return 1
-	fi
-
-	# Get repository owner and name
-	local repo_info
-	repo_info=$(gh repo view --json owner,name 2>/dev/null)
-	if [[ -z "$repo_info" ]]; then
-		return 1
-	fi
-
-	local repo_owner
-	local repo_name
-	if ! repo_owner=$(echo "$repo_info" | jq -r '.owner.login' 2>/dev/null); then
-		return 1
-	fi
-	if ! repo_name=$(echo "$repo_info" | jq -r '.name' 2>/dev/null); then
-		return 1
-	fi
-
-	if [[ -z "$repo_owner" ]] || [[ -z "$repo_name" ]]; then
-		return 1
-	fi
-
-	# Query GitHub API for PRs containing this commit
-	local pr_list
-	pr_list=$(gh api "/repos/${repo_owner}/${repo_name}/commits/${full_hash}/pulls" 2>/dev/null)
-
-	if [[ -z "$pr_list" ]] || [[ "$pr_list" == "[]" ]] || [[ "$pr_list" == "null" ]]; then
-		return 1
-	fi
-
-	# Extract PR numbers and get details for each
-	local pr_numbers
-	if ! pr_numbers=$(echo "$pr_list" | jq -r '.[].number' 2>/dev/null); then
-		return 1
-	fi
-	if [[ -z "$pr_numbers" ]]; then
-		return 1
-	fi
-
-	cat <<EOF
-
-Pull Request Details
-========================================
-
-EOF
-	while read -r pr_number; do
-		if [[ -n "$pr_number" ]]; then
-			local pr_details
-			if ! pr_details=$(gh pr view "$pr_number" --json number,title,url,state,mergedAt,createdAt,body 2>/dev/null); then
-				continue
-			fi
-			if [[ -n "$pr_details" ]]; then
-				if ! echo "$pr_details" | jq -r '
-					"PR #\(.number): \(.title)",
-					"URL: \(.url)",
-					"State: \(.state)",
-					"Created: \(.createdAt)",
-					(if .mergedAt then "Merged: \(.mergedAt)" else empty end),
-					"",
-					"Description:",
-					.body,
-					"---"
-				' 2>/dev/null; then
-					continue
-				fi
-			fi
-		fi
-	done <<<"$pr_numbers"
-
-	return 0
-}
-
 # Write commit details to output file
 #
 # Inputs:
@@ -380,7 +317,8 @@ write_commit_details() {
 	fi
 
 	if [[ "$check_github" == "true" ]]; then
-		if get_pr_details "$commit" >>"$output_file" 2>/dev/null; then
+		local check_github_script="${SCRIPT_DIR}/tools/check-github.sh"
+		if [[ -f "$check_github_script" ]] && "$check_github_script" "$commit" >>"$output_file" 2>/dev/null; then
 			echo "" >>"$output_file"
 		fi
 	fi
