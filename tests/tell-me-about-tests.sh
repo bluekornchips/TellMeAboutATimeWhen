@@ -131,14 +131,10 @@ create_test_repo() {
 	# Verify output directory and page file created
 	local repo_name
 	repo_name=$(basename "$TEST_DIR")
-	local base_dir="$HOME/tellmeaboutatimewhen/${repo_name}_master_author_one"
-	[[ -d "$base_dir" ]]
-
-	# Find timestamp directory
-	mapfile -t timestamp_dirs < <(find "$base_dir" -mindepth 1 -maxdepth 1 -type d 2>/dev/null)
-	[[ ${#timestamp_dirs[@]} -eq 1 ]]
-	local output_dir="${timestamp_dirs[0]}"
+	local base_dir="$HOME/tmaatw/${repo_name}"
+	local output_dir="$base_dir/master/author_one/1"
 	[[ -d "$output_dir" ]]
+	echo "$output" | grep -q "Output written to directory: $output_dir"
 
 	# Find page file with pattern page_N_hash_hash.txt
 	mapfile -t page_files < <(find "$output_dir" -name "page_*.txt" -type f 2>/dev/null)
@@ -187,13 +183,8 @@ create_test_repo() {
 
 	local repo_name
 	repo_name=$(basename "$TEST_DIR")
-	local base_dir="$HOME/tellmeaboutatimewhen/${repo_name}_master_author_one"
-	[[ -d "$base_dir" ]]
-
-	# Find timestamp directory
-	mapfile -t timestamp_dirs < <(find "$base_dir" -mindepth 1 -maxdepth 1 -type d 2>/dev/null)
-	[[ ${#timestamp_dirs[@]} -eq 1 ]]
-	local output_dir="${timestamp_dirs[0]}"
+	local base_dir="$HOME/tmaatw/${repo_name}"
+	local output_dir="$base_dir/master/author_one/1"
 	[[ -d "$output_dir" ]]
 
 	mapfile -t page_files < <(find "$output_dir" -name "page_*.txt" -type f 2>/dev/null)
@@ -218,13 +209,8 @@ create_test_repo() {
 
 	local repo_name
 	repo_name=$(basename "$TEST_DIR")
-	local base_dir="$HOME/tellmeaboutatimewhen/${repo_name}_master_author_one"
-	[[ -d "$base_dir" ]]
-
-	# Find timestamp directory
-	mapfile -t timestamp_dirs < <(find "$base_dir" -mindepth 1 -maxdepth 1 -type d 2>/dev/null)
-	[[ ${#timestamp_dirs[@]} -eq 1 ]]
-	local output_dir="${timestamp_dirs[0]}"
+	local base_dir="$HOME/tmaatw/${repo_name}"
+	local output_dir="$base_dir/master/author_one/1"
 	[[ -d "$output_dir" ]]
 
 	mapfile -t page_files < <(find "$output_dir" -name "page_*.txt" -type f 2>/dev/null)
@@ -268,13 +254,8 @@ create_test_repo() {
 	# When page_size defaults to 0, all commits go to one page file
 	local repo_name
 	repo_name=$(basename "$TEST_DIR")
-	local base_dir="$HOME/tellmeaboutatimewhen/${repo_name}_master_author_one"
-	[[ -d "$base_dir" ]]
-
-	# Find timestamp directory
-	mapfile -t timestamp_dirs < <(find "$base_dir" -mindepth 1 -maxdepth 1 -type d 2>/dev/null)
-	[[ ${#timestamp_dirs[@]} -eq 1 ]]
-	local output_dir="${timestamp_dirs[0]}"
+	local base_dir="$HOME/tmaatw/${repo_name}"
+	local output_dir="$base_dir/master/author_one/1"
 	[[ -d "$output_dir" ]]
 
 	mapfile -t page_files < <(find "$output_dir" -name "page_*.txt" -type f 2>/dev/null)
@@ -294,13 +275,8 @@ create_test_repo() {
 	# Explicit page_size=0 should write all commits to one page file
 	local repo_name
 	repo_name=$(basename "$TEST_DIR")
-	local base_dir="$HOME/tellmeaboutatimewhen/${repo_name}_master_author_one"
-	[[ -d "$base_dir" ]]
-
-	# Find timestamp directory
-	mapfile -t timestamp_dirs < <(find "$base_dir" -mindepth 1 -maxdepth 1 -type d 2>/dev/null)
-	[[ ${#timestamp_dirs[@]} -eq 1 ]]
-	local output_dir="${timestamp_dirs[0]}"
+	local base_dir="$HOME/tmaatw/${repo_name}"
+	local output_dir="$base_dir/master/author_one/1"
 	[[ -d "$output_dir" ]]
 
 	mapfile -t page_files < <(find "$output_dir" -name "page_*.txt" -type f 2>/dev/null)
@@ -358,7 +334,7 @@ create_test_repo() {
 	# Verify slashes in branch name are sanitized to underscores in directory name
 	local output_dir
 	output_dir=$(echo "$output" | grep "Output written to directory:" | sed 's/.*directory: //')
-	echo "$output_dir" | grep -q "feature_my-feature"
+	[[ "$output_dir" == *"/feature_my-feature/"* ]]
 
 	rm -rf "$output_dir"
 }
@@ -371,14 +347,14 @@ create_test_repo() {
 	[[ "$status" -eq 0 ]]
 	echo "$output" | grep -q "Output written to directory:"
 
-	# Verify directory follows format: {repo}_{branch}_{author}/{timestamp}
+	# Verify directory follows format: {repo_name}/{branch}/{author}/{pages}
 	local output_dir
 	output_dir=$(echo "$output" | grep "Output written to directory:" | sed 's/.*directory: //')
-	local dirname
-	dirname=$(basename "$(dirname "$output_dir")")
-
-	echo "$dirname" | grep -q "_master_"
-	echo "$dirname" | grep -q "_author_one$"
+	[[ -d "$output_dir" ]]
+	local repo_name
+	repo_name=$(basename "$TEST_DIR")
+	local expected_dir="$HOME/tmaatw/${repo_name}/master/author_one/1"
+	[[ "$output_dir" == "$expected_dir" ]]
 
 	rm -rf "$output_dir"
 }

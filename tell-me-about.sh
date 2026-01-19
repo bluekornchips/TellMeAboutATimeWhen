@@ -22,7 +22,18 @@ Options:
 EOF
 }
 
-OUTPUT_DIR="$HOME/tellmeaboutatimewhen"
+OUTPUT_DIR="$HOME/tmaatw"
+
+# Get script directory for locating tools
+SCRIPT_DIR=""
+if [[ -n "${BASH_SOURCE[0]}" ]]; then
+	script_path="${BASH_SOURCE[0]}"
+	if [[ -L "$script_path" ]]; then
+		script_path=$(readlink -f "$script_path" 2>/dev/null || echo "$script_path")
+	fi
+	SCRIPT_DIR=$(dirname "$script_path")
+	export SCRIPT_DIR
+fi
 
 # Validation functions and configuration setup
 # Validate that required arguments are provided
@@ -164,6 +175,89 @@ validate_page_size() {
 	return 0
 }
 
+# Initialize PR summary file
+#
+# Inputs:
+# - $1: prs_file
+# - $2: repo_name
+# - $3: branch
+# - $4: author
+# - $5: period_start
+# - $6: period_end
+#
+# Side Effects:
+# - Creates or overwrites the PR summary file
+initialize_prs_file() {
+	local prs_file="$1"
+	local repo_name="$2"
+	local branch="$3"
+	local author="$4"
+	local period_start="$5"
+	local period_end="$6"
+
+	if [[ -z "$prs_file" || -z "$repo_name" || -z "$branch" || -z "$author" ]]; then
+		echo "initialize_prs_file:: Required values are missing" >&2
+		return 1
+	fi
+
+	local range_line="Range: not set"
+	if [[ -n "$period_start" && -n "$period_end" ]]; then
+		range_line="Range: ${period_start} to ${period_end}"
+	fi
+
+	cat <<EOF >"$prs_file"
+# Pull Requests
+
+Repository: ${repo_name}
+Branch: ${branch}
+Author: ${author}
+${range_line}
+
+EOF
+
+	return 0
+}
+
+# Calculate total page count from commit count and page size
+#
+# Inputs:
+# - $1: commit_count
+# - $2: page_size
+#
+# Side Effects:
+# - Outputs page count to stdout
+calculate_pages_count() {
+	local commit_count="$1"
+	local page_size="$2"
+
+	if [[ -z "$commit_count" || -z "$page_size" ]]; then
+		echo "calculate_pages_count:: commit_count or page_size is not set" >&2
+		return 1
+	fi
+
+	if ! [[ "$commit_count" =~ ^[0-9]+$ ]]; then
+		echo "calculate_pages_count:: commit_count must be a non-negative integer: $commit_count" >&2
+		return 1
+	fi
+
+	if ! [[ "$page_size" =~ ^[0-9]+$ ]]; then
+		echo "calculate_pages_count:: page_size must be a non-negative integer: $page_size" >&2
+		return 1
+	fi
+
+	local pages_count=0
+	if [[ "$commit_count" -eq 0 ]]; then
+		pages_count=0
+	elif [[ "$page_size" -eq 0 ]]; then
+		pages_count=1
+	else
+		pages_count=$(((commit_count + page_size - 1) / page_size))
+	fi
+
+	echo "$pages_count"
+	return 0
+}
+
 # Check if GitHub CLI (gh) is installed and authenticated
 #
 # Side Effects:
@@ -175,8 +269,16 @@ check_gh_cli() {
 	fi
 
 	if ! gh auth status >/dev/null 2>&1; then
-		echo "check_gh_cli:: GitHub CLI is not authenticated. Run 'gh auth login'" >&2
-		return 1
+		echo "check_gh_cli:: GitHub CLI is not authenticated" >&2
+		echo "check_gh_cli:: Running 'gh auth login --web --hostname github.com'" >&2
+		if ! gh auth login --web --hostname github.com; then
+			echo "check_gh_cli:: Failed to authenticate with GitHub CLI" >&2
+			return 1
+		fi
+		if ! gh auth status >/dev/null 2>&1; then
+			echo "check_gh_cli:: Authentication completed but status check failed" >&2
+			return 1
+		fi
 	fi
 
 	return 0
@@ -270,106 +372,17 @@ get_commits() {
 	return 0
 }
 
-# Get pull request details for a commit using GitHub CLI
-#
-# Inputs:
-# - $1: commit_hash
-#
-# Side Effects:
-# - Outputs PR details to stdout
-get_pr_details() {
-	local commit="$1"
-
-	# Get full commit hash
-	local full_hash
-	full_hash=$(git rev-parse "$commit" 2>/dev/null)
-	if [[ -z "$full_hash" ]]; then
-		return 1
-	fi
-
-	# Get repository owner and name
-	local repo_info
-	repo_info=$(gh repo view --json owner,name 2>/dev/null)
-	if [[ -z "$repo_info" ]]; then
-		return 1
-	fi
-
-	local repo_owner
-	local repo_name
-	if ! repo_owner=$(echo "$repo_info" | jq -r '.owner.login' 2>/dev/null); then
-		return 1
-	fi
-	if ! repo_name=$(echo "$repo_info" | jq -r '.name' 2>/dev/null); then
-		return 1
-	fi
-
-	if [[ -z "$repo_owner" ]] || [[ -z "$repo_name" ]]; then
-		return 1
-	fi
-
-	# Query GitHub API for PRs containing this commit
-	local pr_list
-	pr_list=$(gh api "/repos/${repo_owner}/${repo_name}/commits/${full_hash}/pulls" 2>/dev/null)
-
-	if [[ -z "$pr_list" ]] || [[ "$pr_list" == "[]" ]] || [[ "$pr_list" == "null" ]]; then
-		return 1
-	fi
-
-	# Extract PR numbers and get details for each
-	local pr_numbers
-	if ! pr_numbers=$(echo "$pr_list" | jq -r '.[].number' 2>/dev/null); then
-		return 1
-	fi
-	if [[ -z "$pr_numbers" ]]; then
-		return 1
-	fi
-
-	cat <<EOF
-
-Pull Request Details
-========================================
-
-EOF
-	while read -r pr_number; do
-		if [[ -n "$pr_number" ]]; then
-			local pr_details
-			if ! pr_details=$(gh pr view "$pr_number" --json number,title,url,state,mergedAt,createdAt,body 2>/dev/null); then
-				continue
-			fi
-			if [[ -n "$pr_details" ]]; then
-				if ! echo "$pr_details" | jq -r '
-					"PR #\(.number): \(.title)",
-					"URL: \(.url)",
-					"State: \(.state)",
-					"Created: \(.createdAt)",
-					(if .mergedAt then "Merged: \(.mergedAt)" else empty end),
-					"",
-					"Description:",
-					.body,
-					"---"
-				' 2>/dev/null; then
-					continue
-				fi
-			fi
-		fi
-	done <<<"$pr_numbers"
-
-	return 0
-}
-
 # Write commit details to output file
 #
 # Inputs:
 # - $1: commit_hash
 # - $2: output_file
-# - $3: check_github (optional, "true" to include GitHub details)
 #
 # Side Effects:
 # - Appends to the output file
 write_commit_details() {
 	local commit="$1"
 	local output_file="$2"
-	local check_github="${3:-false}"
 
 	if ! git log -p --format="%B" -n 1 "$commit" >>"$output_file" 2>/dev/null; then
 		echo "write_commit_details:: Warning: Failed to get commit details for $commit" >&2
@@ -379,10 +392,34 @@ write_commit_details() {
 		echo "write_commit_details:: Warning: Failed to get changed files for $commit" >&2
 	fi
 
-	if [[ "$check_github" == "true" ]]; then
-		if get_pr_details "$commit" >>"$output_file" 2>/dev/null; then
-			echo "" >>"$output_file"
-		fi
+	return 0
+}
+
+# Write PR details to summary file
+#
+# Inputs:
+# - $1: commit_hash
+# - $2: prs_file
+#
+# Side Effects:
+# - Appends PR details to the summary file when available
+write_pr_details() {
+	local commit="$1"
+	local prs_file="$2"
+
+	if [[ -z "$commit" || -z "$prs_file" ]]; then
+		echo "write_pr_details:: commit or prs_file is not set" >&2
+		return 1
+	fi
+
+	local check_github_script="${SCRIPT_DIR}/tools/github.sh"
+	if [[ ! -f "$check_github_script" ]]; then
+		echo "write_pr_details:: GitHub script not found: $check_github_script" >&2
+		return 1
+	fi
+
+	if "$check_github_script" "$commit" >>"$prs_file" 2>/dev/null; then
+		echo "" >>"$prs_file"
 	fi
 
 	return 0
@@ -394,6 +431,7 @@ write_commit_details() {
 # - $1: output_path (directory containing page files)
 # - $2: page_size, 0 means all commits in one page
 # - $3: check_github (optional, "true" to include GitHub details)
+# - $4: prs_file (optional, output file for PR details)
 #
 # Side Effects:
 # - Creates page files in the output directory
@@ -401,6 +439,7 @@ process_commits() {
 	local output_path="$1"
 	local page_size="$2"
 	local check_github="${3:-false}"
+	local prs_file="${4:-}"
 	local commit_count=0
 	local page_number=1
 	local current_file=""
@@ -445,7 +484,10 @@ process_commits() {
 			# Write all commits in page to final filename
 			current_file="$output_path/page_${page_number}_${first_commit_hash:0:7}_${last_commit_hash:0:7}.txt"
 			for page_commit in "${page_commits[@]}"; do
-				write_commit_details "$page_commit" "$current_file" "$check_github"
+				write_commit_details "$page_commit" "$current_file"
+				if [[ "$check_github" == "true" && -n "$prs_file" ]]; then
+					write_pr_details "$page_commit" "$prs_file"
+				fi
 			done
 			# Start new page if current page is full, but not if it's just the last commit
 			if [[ "$page_size" -gt 0 ]] && [[ $commits_in_page -eq "$page_size" ]]; then
@@ -586,7 +628,10 @@ main() {
 	fi
 
 	# Determine period dates for output filenames
-	determine_period_dates "$range_date1" "$range_date2"
+	if ! determine_period_dates "$range_date1" "$range_date2"; then
+		popd >/dev/null || return 1
+		return 1
+	fi
 
 	# Get commits
 	if ! get_commits "$author" "$range_date1" "$range_date2" "$branch"; then
@@ -602,6 +647,8 @@ main() {
 		if ! commit_count=$(echo "$COMMITS" | wc -l); then
 			echo "main:: Warning: Failed to count commits" >&2
 			commit_count=0
+		else
+			commit_count="${commit_count//[[:space:]]/}"
 		fi
 	fi
 	echo "main:: Commit count: $commit_count"
@@ -617,16 +664,15 @@ main() {
 		sanitized_branch=$(tr -c 'a-zA-Z0-9_-' '_' <<<"$branch" | sed 's/_$//' || echo "unknown_branch")
 	fi
 
-	# Generate timestamp for this run
-	local timestamp
-	if ! timestamp=$(date +%Y%m%d_%H%M%S 2>/dev/null); then
-		echo "main:: Failed to generate timestamp" >&2
+	local pages_count
+	if ! pages_count=$(calculate_pages_count "$commit_count" "$page_size"); then
+		echo "main:: Failed to calculate page count" >&2
 		popd >/dev/null || return 1
 		return 1
 	fi
 
-	local repo_params="${REPO_NAME}_${sanitized_branch}_${sanitized_author}"
-	local output_path="$OUTPUT_DIR/${repo_params}/${timestamp}"
+	local base_output_dir="$OUTPUT_DIR/${REPO_NAME}/${sanitized_branch}/${sanitized_author}"
+	local output_path="$base_output_dir/${pages_count}"
 
 	# Create output directory
 	if ! mkdir -p "$output_path" 2>/dev/null; then
@@ -635,8 +681,17 @@ main() {
 		return 1
 	fi
 
+	local prs_file=""
+	if [[ "$check_github" == "true" ]]; then
+		prs_file="${base_output_dir}/prs.md"
+		if ! initialize_prs_file "$prs_file" "$REPO_NAME" "$sanitized_branch" "$sanitized_author" "$PERIOD_START" "$PERIOD_END"; then
+			popd >/dev/null || return 1
+			return 1
+		fi
+	fi
+
 	# Process commits
-	process_commits "$output_path" "$page_size" "$check_github"
+	process_commits "$output_path" "$page_size" "$check_github" "$prs_file"
 
 	# Restore original directory (trap handler will also do this, but explicit is clearer)
 	popd >/dev/null || true

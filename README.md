@@ -65,7 +65,7 @@ Analyze commits with GitHub pull request details:
 
 ## Output
 
-The script generates paginated text files in the directory `$HOME/tellmeaboutatimewhen/{repo}_{branch}_{author}/{timestamp}/`. Each page file follows the naming pattern `page_N_hash_hash.txt` where:
+The script generates paginated text files in the directory `$HOME/tmaatw/{repo_name}/{repo_branch}/{author}/{pages}/`. The `{pages}` segment is the total number of page files generated for the run. Each page file follows the naming pattern `page_N_hash_hash.txt` where:
 - `N` is the page number
 - `hash_hash` are the first 7 characters of the first and last commit hashes in that page
 
@@ -74,6 +74,10 @@ Each page file contains:
 - Commit details (diffs and messages) for all commits in that page
 - List of changed files for each commit
 - Pull request details (if `--github` option is used)
+
+When `--github` is used, a consolidated PR summary is written to:
+
+`$HOME/tmaatw/{repo_name}/{repo_branch}/{author}/prs.md`
 
 The script outputs the commit count and the output directory path to stdout.
 
@@ -92,7 +96,7 @@ The script includes comprehensive error handling for:
 
 ## Environment Variables
 
-- `HOME`: Used to determine the output directory base path (`$HOME/tellmeaboutatimewhen`). Must be set.
+- `HOME`: Used to determine the output directory base path (`$HOME/tmaatw`). Must be set.
 
 ## Dependencies
 

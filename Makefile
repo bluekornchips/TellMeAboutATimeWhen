@@ -1,6 +1,7 @@
 test:
 	@if command -v bats >/dev/null 2>&1; then \
-		bats tests/tell-me-about-tests.sh; \
+		clear && bats --verbose-run --timing \
+		tests/tell-me-about-tests.sh tests/tools/github-tests.sh; \
 	else \
 		echo "Error: bats is not installed. Install it with:"; \
 		echo "  brew install bats-core  # macOS"; \
