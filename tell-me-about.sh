@@ -37,6 +37,7 @@ EOF
 DEFAULT_OUTPUT_DIR="tmaatw"
 DEFAULT_GITHUB_SCRIPT="tools/github.sh"
 DEFAULT_JIRA_SCRIPT="tools/jira.sh"
+OUTPUT_LABEL_WIDTH=8
 
 ########################################
 # Input Defaults
@@ -372,6 +373,7 @@ get_commits() {
 write_commit_details() {
 	local commit="$1"
 	local output_file="$2"
+	local failed=0
 
 	if [[ -z "$commit" || -z "$output_file" ]]; then
 		echo "write_commit_details:: commit or output_file is not set" >&2
@@ -384,10 +386,16 @@ write_commit_details() {
 
 	if ! git log -p --format="%B" -n 1 "$commit" >>"$output_file" 2>/dev/null; then
 		echo "write_commit_details:: Failed to get commit details for $commit" >&2
+		failed=1
 	fi
 
 	if ! git diff-tree --no-commit-id --name-only -r "$commit" >>"$output_file" 2>/dev/null; then
 		echo "write_commit_details:: Failed to get changed files for $commit" >&2
+		failed=1
+	fi
+
+	if [[ "$failed" -ne 0 ]]; then
+		return 1
 	fi
 
 	return 0
@@ -455,9 +463,6 @@ process_commits() {
 		fi
 		COMMIT_DIRS+=("$commit_dir")
 
-		echo "$short_commit"
-		echo "========"
-
 		local diff_file="${commit_dir}/diff.txt"
 		if [[ ! -f "$diff_file" ]]; then
 			if ! write_commit_details "$commit" "$diff_file"; then
@@ -465,42 +470,33 @@ process_commits() {
 			fi
 		fi
 
+		local jira_link=""
 		if [[ "$CHECK_JIRA" == "true" ]]; then
 			local jira_file="${commit_dir}/jira.txt"
-			local jira_status=""
 			JIRA_FILE="$jira_file"
-			if write_jira_details_to_file; then
-				if [[ -s "$jira_file" ]]; then
-					jira_status="Wrote to $jira_file"
-				else
-					jira_status="No tickets $jira_file"
-				fi
-			else
-				jira_status="Failed | $jira_file"
-			fi
-			echo "jira: $jira_status"
+			write_jira_details_to_file >/dev/null 2>&1 || true
+			jira_link="$jira_file"
 		fi
 
+		local github_link=""
 		if [[ "$CHECK_GITHUB" == "true" ]]; then
 			local pr_file="${commit_dir}/pr.json"
-			local github_status=""
-			if [[ -f "$pr_file" ]]; then
-				github_status="$pr_file"
-			else
+			if [[ ! -f "$pr_file" ]]; then
 				PR_FILE="$pr_file"
-				if write_pr_details_to_file; then
-					if [[ -f "$pr_file" ]]; then
-						github_status="Wrote to $pr_file"
-					else
-						github_status="No PRs | $pr_file"
-					fi
-				else
-					github_status="Failed | $pr_file"
-				fi
+				write_pr_details_to_file >/dev/null 2>&1 || true
 			fi
-			echo "github: $github_status"
+			github_link="$pr_file"
+		fi
+
+		printf "\n%-${OUTPUT_LABEL_WIDTH}s%s\n" "Commit:" "$short_commit"
+		if [[ -n "$jira_link" ]]; then
+			printf "%-${OUTPUT_LABEL_WIDTH}s%s\n" "Jira:" "$jira_link"
+		fi
+		if [[ -n "$github_link" ]]; then
+			printf "%-${OUTPUT_LABEL_WIDTH}s%s\n" "Github:" "$github_link"
 		fi
 	done
+
 	return 0
 }
 
@@ -665,17 +661,6 @@ main() {
 
 	popd >/dev/null || true
 
-	if (( ${#COMMIT_DIRS[@]} > 0 )); then
-		cat <<EOF
-Commit directories
-===============================
-
-EOF
-		local commit_dir
-		for commit_dir in "${COMMIT_DIRS[@]}"; do
-			echo "$commit_dir"
-		done
-	fi
 	return 0
 }
 

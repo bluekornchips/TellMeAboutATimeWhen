@@ -51,10 +51,10 @@ If no range or SHA is specified, defaults to commits from the past week.
 
 ## Examples
 
-Analyze commits by author for the past 2 weeks:
+Analyze commits by author for the past week:
 
 ```bash
-./tell-me-about.sh -p /path/to/repo -b main -a "Author Name" --range "2 weeks ago"
+./tell-me-about.sh -p /path/to/repo -b main -a "Author Name" --range "1 week ago"
 ```
 
 Analyze commits between two specific dates:

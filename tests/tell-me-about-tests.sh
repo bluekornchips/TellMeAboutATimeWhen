@@ -26,10 +26,13 @@ setup() {
 	TEST_DIR=$(mktemp -d)
 	export TEST_DIR
 
+	trap 'rm -rf "$TEST_DIR"' EXIT
+
 	# Source the script to make functions available for unit testing
 	# shellcheck disable=SC1090
 	set +e
 	source "$SCRIPT" || true
+	set +e
 
 	# Reset global variables that may be set by functions
 	unset PERIOD_START PERIOD_END
@@ -40,7 +43,6 @@ setup() {
 }
 
 teardown() {
-	rm -rf "$TEST_DIR"
 	return 0
 }
 
@@ -57,6 +59,12 @@ create_test_repo() {
 	echo "test file" >test.txt
 	git add test.txt
 	git commit -m "Initial commit" >/dev/null 2>&1
+
+	local default_branch
+	default_branch=$(git symbolic-ref --short HEAD 2>/dev/null || echo "master")
+	if [[ "$default_branch" != "master" ]]; then
+		git branch -m master >/dev/null 2>&1 || true
+	fi
 
 	# Create commits with different authors to test author filtering
 	echo "change by author1" >>test.txt
@@ -75,7 +83,9 @@ create_test_repo() {
 	git add test.txt
 	git commit -m "Branch commit" >/dev/null 2>&1
 
-	git checkout master >/dev/null 2>&1
+	local default_branch
+	default_branch=$(git symbolic-ref --short HEAD 2>/dev/null || echo "master")
+	git checkout "$default_branch" >/dev/null 2>&1
 
 	return 0
 }
@@ -127,6 +137,12 @@ create_test_repo() {
 	echo "test" >file.txt
 	git add file.txt
 	git commit -m "Initial commit" >/dev/null 2>&1
+
+	local default_branch
+	default_branch=$(git symbolic-ref --short HEAD 2>/dev/null || echo "master")
+	if [[ "$default_branch" != "master" ]]; then
+		git branch -m master >/dev/null 2>&1 || true
+	fi
 
 	run "$SCRIPT" -p "$test_repo" -b "master" -a "Test User" --range "invalid-date"
 	[[ "$status" -ne 0 ]]
