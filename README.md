@@ -1,127 +1,179 @@
-# Git Commit Analyzer
+# TellMeAboutATimeWhen
 
-This script analyzes Git commits within a specified repository, branch, and author, and outputs the commit details, messages, and changed files to paginated text files. It also includes a safety check to ensure the provided author has commits in the repository.
+Git commit analyzer that extracts commit details, GitHub pull requests, and JIRA ticket information for a specific author within a repository.
+
+## Overview
+
+This tool analyzes git commits and saves detailed information to commit-specific directories. Each commit gets its own directory containing:
+
+- `diff.txt`: Commit message and changed files
+- `pr.json`: Pull request details from GitHub
+- `jira.txt`: JIRA ticket details extracted from commit messages
 
 ## Requirements
 
-- **Bash**: Version 4.0 or higher (for array support)
-- **Git**: Required for repository operations
-- **GitHub CLI (`gh`)**: Required only if using `--github` option
-- **jq**: Required only if using `--github` option
+- Bash 4.0 or higher
+- Git
+- GitHub CLI (`gh`) for `--github` option
+- jq for `--github` option
+- Atlassian CLI (`acli`) for `--jira` option
+
+## Install
+
+```bash
+git clone https://github.com/bluekornchips/TellMeAboutATimeWhen.git
+cd TellMeAboutATimeWhen
+make install
+```
 
 ## Usage
 
 ```bash
-./tell-me-about.sh -p <path> -b <branch> -a <author> [--page-size <number>] [--range <date> | --range <start_date> <end_date>] [--github]
+./tell-me-about.sh -p <path> -b <branch> -a <author> [options]
 ```
 
-**Required Arguments:**
+Required Arguments:
 
-- `-p <path>`: Path to the Git repository.
-- `-b <branch>`: Branch to analyze.
-- `-a <author>`: Author of the commits.
+- `-p <path>`: Path to the git repository
+- `-b <branch>`: Branch to analyze
+- `-a <author>`: Author of the commits
 
-**Optional Arguments:**
+Optional Arguments:
 
-- `--page-size <number>`: Number of commits per output file (0 for single file, default: 0).
-- `--range <date>`: Analyze commits since the specified date (single argument).
-- `--range <start_date> <end_date>`: Analyze commits between two dates (two arguments).
-- `--github`: Include GitHub details for commits, such as pull request information (requires GitHub CLI and jq).
-- `-h, --help`: Show help message.
+- `--range <date>`: Analyze commits since date, or between two dates when two arguments provided
+- `--sha <commit>`: Analyze specific commit by SHA, can be used multiple times, replaces `--range`
+- `--include-merges`: Include merge commits with subjects matching the author
+- `--github`: Include GitHub pull request details for commits
+- `--jira`: Include JIRA ticket details for commits that reference tickets
+- `-h, --help`: Show help message
 
-If no range is specified, defaults to analyzing commits from the past week.
+If no range or SHA is specified, defaults to commits from the past week.
 
 ## Examples
 
-Analyze commits by a specific author for the past 2 weeks:
+Analyze commits by author for the past 2 weeks:
 
 ```bash
-./tell-me-about.sh -p /path/to/my/repo -b main -a "Author Name" --range "2 weeks ago"
+./tell-me-about.sh -p /path/to/repo -b main -a "Author Name" --range "2 weeks ago"
 ```
 
-Analyze commits by a specific author between two specific dates:
+Analyze commits between two specific dates:
 
 ```bash
-./tell-me-about.sh -p /path/to/my/repo -b main -a "Author Name" --range "2025-01-01" "2025-12-31"
+./tell-me-about.sh -p /path/to/repo -b main -a "Author Name" --range "2025-01-01" "2025-01-31"
 ```
 
-Analyze commits by a specific author from the past week (default behavior):
+Analyze specific commits by SHA:
 
 ```bash
-./tell-me-about.sh -p /path/to/my/repo -b main -a "Author Name"
+./tell-me-about.sh -p /path/to/repo -b main -a "Author Name" --sha abc1234 --sha def5678
 ```
 
-Analyze commits with pagination (5 commits per file):
+Analyze commits with GitHub and JIRA details:
 
 ```bash
-./tell-me-about.sh -p /path/to/my/repo -b main -a "Author Name" --page-size 5
+./tell-me-about.sh -p /path/to/repo -b main -a "Author Name" --github --jira
 ```
 
-Analyze commits with GitHub pull request details:
+Include merge commits in analysis:
 
 ```bash
-./tell-me-about.sh -p /path/to/my/repo -b main -a "Author Name" --github
+./tell-me-about.sh -p /path/to/repo -b main -a "Author Name" --include-merges
 ```
 
-## Output
+## Output Structure
 
-The script generates paginated text files in the directory `$HOME/tmaatw/{repo_name}/{repo_branch}/{author}/{pages}/`. The `{pages}` segment is the total number of page files generated for the run. Each page file follows the naming pattern `page_N_hash_hash.txt` where:
-- `N` is the page number
-- `hash_hash` are the first 7 characters of the first and last commit hashes in that page
+The script creates directories at:
 
-Each page file contains:
+```
+$HOME/tmaatw/{repo_name}/{branch}/{author}/{short_commit}/
+```
 
-- Commit details (diffs and messages) for all commits in that page
-- List of changed files for each commit
-- Pull request details (if `--github` option is used)
+Each commit directory contains:
 
-When `--github` is used, a consolidated PR summary is written to:
+- `diff.txt`: Full commit diff, message, and list of changed files
+- `pr.json`: GitHub pull request details as JSON, created when `--github` is used
+- `jira.txt`: JIRA ticket details and comments, created when `--jira` is used
 
-`$HOME/tmaatw/{repo_name}/{repo_branch}/{author}/prs.md`
+## GitHub Authentication
 
-The script outputs the commit count and the output directory path to stdout.
+When using the `--github` option, the script requires GitHub CLI to be installed and authenticated.
 
-## Error Handling
+Setup:
 
-The script includes comprehensive error handling for:
+```bash
+gh auth login --web --hostname github.com
+```
 
-- Invalid repository path.
-- Failed directory changes.
-- Failed Git commands (e.g., getting repository name, commit list, commit details, changed files).
-- Missing required arguments.
-- Invalid date formats for the `--range` argument.
-- Multiple usage of the `--range` or `--page-size` flags.
-- **Author existence check:** Ensures the provided author has commits within the repository's history, preventing unnecessary processing and empty output files.
-- GitHub CLI authentication (when using `--github` option).
+Verify authentication:
+
+```bash
+gh auth status
+```
+
+## JIRA Authentication
+
+When using the `--jira` option, the script requires Atlassian CLI to be installed and authenticated.
+
+Required Permissions:
+
+- Browse Projects: Read access to projects containing referenced tickets
+- Read Issues: Permission to view issue details
+- Read Comments: Permission to view issue comments
+
+Setup:
+
+Install Atlassian CLI following the [installation guide](https://developer.atlassian.com/cloud/acli/guides/install-acli/).
+
+Authenticate with OAuth:
+
+```bash
+acli jira auth login --web
+```
+
+Or authenticate with API token:
+
+```bash
+acli jira auth login --site "your-site.atlassian.net" --email "your-email@example.com" --token
+```
+
+Verify authentication:
+
+```bash
+acli jira auth status
+```
+
+## Testing
+
+Run all tests:
+
+```bash
+make test
+```
+
+Run linting:
+
+```bash
+make lint
+```
+
+## Standalone Tool Usage
+
+The GitHub and JIRA tools can be used independently.
+
+Get PR details for a commit:
+
+```bash
+./tools/github.sh <commit_hash>
+```
+
+Get JIRA ticket details:
+
+```bash
+./tools/jira.sh <ticket_id>
+```
 
 ## Environment Variables
 
-- `HOME`: Used to determine the output directory base path (`$HOME/tmaatw`). Must be set.
-
-## Dependencies
-
-- `bash`
-- `git`
-- `jq`
-- `gh`
-
-## Installation
-
-1.  Clone or download the script.
-2.  Make the script executable:
-
-```bash
-chmod +x tell-me-about.sh
-```
-
-3.  Run the script from your terminal, providing the required arguments.
-
-```bash
-./tell-me-about.sh -p /path/to/your/repo -b yourBranch -a AuthorName
-```
-
-Or with date range filtering:
-
-```bash
-./tell-me-about.sh -p /path/to/your/repo -b yourBranch -a AuthorName --range "1 month ago"
-```
+- `HOME`: Used to determine the output directory base path, must be set
+- `OUTPUT_DIR`: Override the default output directory, defaults to `$HOME/tmaatw`

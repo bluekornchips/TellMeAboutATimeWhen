@@ -1,14 +1,12 @@
 test:
-	@if command -v bats >/dev/null 2>&1; then \
-		clear && bats --verbose-run --timing \
-		tests/tell-me-about-tests.sh tests/tools/github-tests.sh; \
-	else \
-		echo "Error: bats is not installed. Install it with:"; \
-		echo "  brew install bats-core  # macOS"; \
-		echo "  sudo apt-get install bats  # Ubuntu/Debian"; \
-		exit 1; \
-	fi
+	clear && bats --verbose-run --timing \
+	tests/tell-me-about-tests.sh \
+	tests/tools/github-tests.sh \
+	tests/tools/jira-tests.sh;
+
+lint:
+	find . -name "*.sh" -type f | xargs shellcheck
 
 install:
-	chmod +x tell-me-about.sh tests/tell-me-about-tests.sh
+	find . -type f -executable -exec chmod 744 {} \;
 	@echo "Scripts are now executable"

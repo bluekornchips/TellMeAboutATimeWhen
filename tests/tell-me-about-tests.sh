@@ -7,13 +7,13 @@ setup_file() {
 	GIT_ROOT="$(git rev-parse --show-toplevel || echo "")"
 	if [[ -z "$GIT_ROOT" ]]; then
 		echo "Failed to get git root" >&2
-		exit 1
+		return 1
 	fi
 
 	SCRIPT="$GIT_ROOT/tell-me-about.sh"
 	if [[ ! -f "$SCRIPT" ]]; then
 		echo "Script not found: $SCRIPT" >&2
-		exit 1
+		return 1
 	fi
 
 	export GIT_ROOT
@@ -26,14 +26,21 @@ setup() {
 	TEST_DIR=$(mktemp -d)
 	export TEST_DIR
 
-	# Set trap handler for cleanup on exit/error
-	trap 'rm -rf "$TEST_DIR"' EXIT ERR
+	# Source the script to make functions available for unit testing
+	# shellcheck disable=SC1090
+	set +e
+	source "$SCRIPT" || true
+
+	# Reset global variables that may be set by functions
+	unset PERIOD_START PERIOD_END
+	OUTPUT_DIR="${TEST_DIR}/output"
+	export OUTPUT_DIR
 
 	return 0
 }
 
 teardown() {
-	[[ -d "$TEST_DIR" ]] && rm -rf "$TEST_DIR"
+	rm -rf "$TEST_DIR"
 	return 0
 }
 
@@ -106,13 +113,116 @@ create_test_repo() {
 @test "unit:: fails when using --range option twice" {
 	run "$SCRIPT" -p "/tmp" -b "master" -a "test@example.com" --range "2025-01-01" --range "2025-06-01"
 	[[ "$status" -ne 0 ]]
-	echo "$output" | grep -q "\\-\\-range option can only be used once"
+	echo "$output" | grep -q "main:: --range option can only be used once"
 }
 
 @test "unit:: fails with invalid date format in --range" {
-	run "$SCRIPT" -p "/tmp" -b "master" -a "test@example.com" --range "invalid-date"
+	# Create a minimal repo for this test
+	local test_repo="${TEST_DIR}/date_test_repo"
+	mkdir -p "$test_repo"
+	cd "$test_repo" || return 1
+	git init >/dev/null 2>&1
+	git config user.name "Test User"
+	git config user.email "test@example.com"
+	echo "test" >file.txt
+	git add file.txt
+	git commit -m "Initial commit" >/dev/null 2>&1
+
+	run "$SCRIPT" -p "$test_repo" -b "master" -a "Test User" --range "invalid-date"
 	[[ "$status" -ne 0 ]]
-	echo "$output" | grep -q "Invalid date format"
+	echo "$output" | grep -q "determine_period_dates:: Failed to parse date"
+}
+
+# parse_date
+@test "parse_date:: parses valid ISO date format" {
+	local result
+	result=$(parse_date "2026-01-19")
+	[[ "$result" == "2026-01-19" ]]
+}
+
+@test "parse_date:: parses valid ISO date format with different date" {
+	local result
+	result=$(parse_date "2025-12-31")
+	[[ "$result" == "2025-12-31" ]]
+}
+
+@test "parse_date:: handles relative date '1 week ago'" {
+	local result
+	result=$(parse_date "1 week ago")
+	[[ -n "$result" ]]
+	[[ "$result" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]
+}
+
+@test "parse_date:: fails with invalid date format" {
+	run parse_date "invalid-date"
+	[[ "$status" -ne 0 ]]
+}
+
+@test "parse_date:: fails with empty string" {
+	run parse_date ""
+	[[ "$status" -ne 0 ]]
+}
+
+@test "parse_date:: fails with malformed ISO date" {
+	run parse_date "2026-13-45"
+	[[ "$status" -ne 0 ]]
+}
+
+@test "parse_date:: fails with wrong date format" {
+	run parse_date "01/19/2026"
+	[[ "$status" -ne 0 ]]
+}
+
+# determine_period_dates
+@test "determine_period_dates:: sets PERIOD_START and PERIOD_END with two dates" {
+	RANGE_DATE1="2026-01-19"
+	RANGE_DATE2="2026-01-23"
+	determine_period_dates
+	[[ "$PERIOD_START" == "2026-01-19" ]]
+	[[ "$PERIOD_END" == "2026-01-23" ]]
+}
+
+@test "determine_period_dates:: sets PERIOD_START and PERIOD_END with single date" {
+	RANGE_DATE1="2026-01-19"
+	RANGE_DATE2=""
+	determine_period_dates
+	[[ "$PERIOD_START" == "2026-01-19" ]]
+	[[ -n "$PERIOD_END" ]]
+	[[ "$PERIOD_END" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]
+}
+
+@test "determine_period_dates:: sets PERIOD_START and PERIOD_END with no dates" {
+	RANGE_DATE1=""
+	RANGE_DATE2=""
+	determine_period_dates
+	[[ -n "$PERIOD_START" ]]
+	[[ "$PERIOD_START" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]
+	[[ -n "$PERIOD_END" ]]
+	[[ "$PERIOD_END" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]
+}
+
+@test "determine_period_dates:: fails with invalid first date" {
+	RANGE_DATE1="invalid-date"
+	RANGE_DATE2="2026-01-23"
+	run determine_period_dates
+	[[ "$status" -ne 0 ]]
+	echo "$output" | grep -q "determine_period_dates:: Failed to parse date"
+}
+
+@test "determine_period_dates:: fails with invalid second date" {
+	RANGE_DATE1="2026-01-19"
+	RANGE_DATE2="invalid-date"
+	run determine_period_dates
+	[[ "$status" -ne 0 ]]
+	echo "$output" | grep -q "determine_period_dates:: Failed to parse date"
+}
+
+@test "determine_period_dates:: fails with invalid single date" {
+	RANGE_DATE1="invalid-date"
+	RANGE_DATE2=""
+	run determine_period_dates
+	[[ "$status" -ne 0 ]]
+	echo "$output" | grep -q "determine_period_dates:: Failed to parse date"
 }
 
 ########################################################
@@ -124,25 +234,29 @@ create_test_repo() {
 
 	run "$SCRIPT" -p "$TEST_DIR" -b "master" -a "Author One"
 
+	if [[ "$status" -ne 0 ]]; then
+		echo "Script failed: $output" >&3
+	fi
 	[[ "$status" -eq 0 ]]
-	echo "$output" | grep -q "Commit count:"
-	echo "$output" | grep -q "Output written to directory:"
+	echo "$output" | grep -q "Commit directories"
 
-	# Verify output directory and page file created
+	# Verify output directory and commit directory created
 	local repo_name
 	repo_name=$(basename "$TEST_DIR")
-	local base_dir="$HOME/tmaatw/${repo_name}"
-	local output_dir="$base_dir/master/author_one/1"
+	local base_dir="${OUTPUT_DIR}/${repo_name}"
+	local output_dir="$base_dir/master/author_one"
 	[[ -d "$output_dir" ]]
-	echo "$output" | grep -q "Output written to directory: $output_dir"
+	echo "$output" | grep -q "$output_dir/"
 
-	# Find page file with pattern page_N_hash_hash.txt
-	mapfile -t page_files < <(find "$output_dir" -name "page_*.txt" -type f 2>/dev/null)
-	[[ ${#page_files[@]} -eq 1 ]]
-	[[ -f "${page_files[0]}" ]]
-	grep -q "Commit by author1" "${page_files[0]}"
+	# Find commit directory (hash is unpredictable)
+	shopt -s nullglob
+	local commit_dirs=("$output_dir"/*)
+	shopt -u nullglob
+	[[ ${#commit_dirs[@]} -eq 1 ]]
+	[[ -d "${commit_dirs[0]}" ]]
+	[[ -f "${commit_dirs[0]}/diff.txt" ]]
+	grep -q "Commit by author1" "${commit_dirs[0]}/diff.txt"
 
-	rm -rf "$base_dir"
 }
 
 @test "integration:: handles time range parameter" {
@@ -151,8 +265,7 @@ create_test_repo() {
 	run "$SCRIPT" -p "$TEST_DIR" -b "master" -a "Author One" --range "1 week ago"
 
 	[[ "$status" -eq 0 ]]
-	echo "$output" | grep -q "Commit count:"
-	echo "$output" | grep -q "Output written to directory:"
+	echo "$output" | grep -q "Commit directories"
 }
 
 @test "integration:: handles different branch" {
@@ -161,8 +274,7 @@ create_test_repo() {
 	run "$SCRIPT" -p "$TEST_DIR" -b "test-branch" -a "Test User"
 
 	[[ "$status" -eq 0 ]]
-	echo "$output" | grep -q "Commit count:"
-	echo "$output" | grep -q "Output written to directory:"
+	echo "$output" | grep -q "Commit directories"
 }
 
 @test "integration:: handles author not found" {
@@ -183,18 +295,19 @@ create_test_repo() {
 
 	local repo_name
 	repo_name=$(basename "$TEST_DIR")
-	local base_dir="$HOME/tmaatw/${repo_name}"
-	local output_dir="$base_dir/master/author_one/1"
+	local base_dir="${OUTPUT_DIR}/${repo_name}"
+	local output_dir="$base_dir/master/author_one"
 	[[ -d "$output_dir" ]]
 
-	mapfile -t page_files < <(find "$output_dir" -name "page_*.txt" -type f 2>/dev/null)
-	[[ ${#page_files[@]} -eq 1 ]]
-	[[ -f "${page_files[0]}" ]]
+	shopt -s nullglob
+	local commit_dirs=("$output_dir"/*)
+	shopt -u nullglob
+	[[ ${#commit_dirs[@]} -eq 1 ]]
+	[[ -d "${commit_dirs[0]}" ]]
+	[[ -f "${commit_dirs[0]}/diff.txt" ]]
 
-	grep -q "Commit by author1" "${page_files[0]}"
-	grep -q "Commit by author1" "${page_files[0]}"
+	grep -q "Commit by author1" "${commit_dirs[0]}/diff.txt"
 
-	rm -rf "$base_dir"
 }
 
 @test "integration:: --range flag works with date range" {
@@ -204,21 +317,22 @@ create_test_repo() {
 	run "$SCRIPT" -p "$TEST_DIR" -b "master" -a "Author One" --range "2020-01-01" "2030-12-31"
 
 	[[ "$status" -eq 0 ]]
-	echo "$output" | grep -q "Commit count:"
-	echo "$output" | grep -q "Output written to directory:"
+	echo "$output" | grep -q "Commit directories"
 
 	local repo_name
 	repo_name=$(basename "$TEST_DIR")
-	local base_dir="$HOME/tmaatw/${repo_name}"
-	local output_dir="$base_dir/master/author_one/1"
+	local base_dir="${OUTPUT_DIR}/${repo_name}"
+	local output_dir="$base_dir/master/author_one"
 	[[ -d "$output_dir" ]]
 
-	mapfile -t page_files < <(find "$output_dir" -name "page_*.txt" -type f 2>/dev/null)
-	[[ ${#page_files[@]} -eq 1 ]]
-	[[ -f "${page_files[0]}" ]]
-	grep -q "Commit by author1" "${page_files[0]}"
+	shopt -s nullglob
+	local commit_dirs=("$output_dir"/*)
+	shopt -u nullglob
+	[[ ${#commit_dirs[@]} -eq 1 ]]
+	[[ -d "${commit_dirs[0]}" ]]
+	[[ -f "${commit_dirs[0]}/diff.txt" ]]
+	grep -q "Commit by author1" "${commit_dirs[0]}/diff.txt"
 
-	rm -rf "$base_dir"
 }
 
 @test "integration:: --range flag works with single date" {
@@ -228,8 +342,7 @@ create_test_repo() {
 	run "$SCRIPT" -p "$TEST_DIR" -b "master" -a "Author One" --range "1 week ago"
 
 	[[ "$status" -eq 0 ]]
-	echo "$output" | grep -q "Commit count:"
-	echo "$output" | grep -q "Output written to directory:"
+	echo "$output" | grep -q "Commit directories"
 }
 
 @test "integration:: --range flag filters commits correctly" {
@@ -239,78 +352,7 @@ create_test_repo() {
 	run "$SCRIPT" -p "$TEST_DIR" -b "master" -a "Author One" --range "2000-01-01" "2001-12-31"
 
 	[[ "$status" -eq 0 ]]
-	echo "$output" | grep -q "Commit count: 0"
-	echo "$output" | grep -q "Output written to directory:"
-}
-
-@test "integration:: --page-size defaults to 0 (unlimited page)" {
-	create_test_repo "$TEST_DIR"
-
-	run "$SCRIPT" -p "$TEST_DIR" -b "master" -a "Author One"
-
-	[[ "$status" -eq 0 ]]
-	echo "$output" | grep -q "Output written to directory:"
-
-	# When page_size defaults to 0, all commits go to one page file
-	local repo_name
-	repo_name=$(basename "$TEST_DIR")
-	local base_dir="$HOME/tmaatw/${repo_name}"
-	local output_dir="$base_dir/master/author_one/1"
-	[[ -d "$output_dir" ]]
-
-	mapfile -t page_files < <(find "$output_dir" -name "page_*.txt" -type f 2>/dev/null)
-	[[ ${#page_files[@]} -eq 1 ]]
-	[[ -f "${page_files[0]}" ]]
-	rm -rf "$base_dir"
-}
-
-@test "integration:: --page-size 0 creates unlimited page (all commits in single file)" {
-	create_test_repo "$TEST_DIR"
-
-	run "$SCRIPT" -p "$TEST_DIR" -b "master" -a "Author One" --page-size 0
-
-	[[ "$status" -eq 0 ]]
-	echo "$output" | grep -q "Output written to directory:"
-
-	# Explicit page_size=0 should write all commits to one page file
-	local repo_name
-	repo_name=$(basename "$TEST_DIR")
-	local base_dir="$HOME/tmaatw/${repo_name}"
-	local output_dir="$base_dir/master/author_one/1"
-	[[ -d "$output_dir" ]]
-
-	mapfile -t page_files < <(find "$output_dir" -name "page_*.txt" -type f 2>/dev/null)
-	[[ ${#page_files[@]} -eq 1 ]]
-	[[ -f "${page_files[0]}" ]]
-	rm -rf "$base_dir"
-}
-
-@test "integration:: --page-size creates paginated output" {
-	create_test_repo "$TEST_DIR"
-
-	# Author One has 1 commit, page_size=2 should create only one page file
-	run "$SCRIPT" -p "$TEST_DIR" -b "master" -a "Author One" --page-size 2
-
-	[[ "$status" -eq 0 ]]
-	echo "$output" | grep -q "Output written to directory:"
-
-	local output_dir
-	output_dir=$(echo "$output" | grep "Output written to directory:" | sed 's/.*directory: //')
-	[[ -d "$output_dir" ]]
-
-	# Check that page file exists with new naming pattern page_N_hash_hash.txt
-	local page_files=("$output_dir"/page_1_*.txt)
-	[[ ${#page_files[@]} -eq 1 ]]
-	[[ -f "${page_files[0]}" ]]
-
-	# Verify no second page file exists
-	[[ $(find "$output_dir" -name "page_2_*.txt" -type f 2>/dev/null | wc -l) -eq 0 ]]
-
-	local commit_count_p1
-	commit_count_p1=$(grep -c "Commit by author1" "${page_files[0]}")
-	[[ $commit_count_p1 -eq 1 ]]
-
-	rm -rf "$output_dir"
+	echo "$output" | grep -q "No commits found"
 }
 
 @test "integration:: branch name sanitization" {
@@ -326,62 +368,14 @@ create_test_repo() {
 			git commit --author="Author One <author1@example.com>" -m "Feature commit" >/dev/null 2>&1
 	)
 
-	run "$SCRIPT" -p "$TEST_DIR" -b "feature/my-feature" -a "Author One" --page-size 1
+	run "$SCRIPT" -p "$TEST_DIR" -b "feature/my-feature" -a "Author One"
 
 	[[ "$status" -eq 0 ]]
-	echo "$output" | grep -q "Output written to directory:"
 
 	# Verify slashes in branch name are sanitized to underscores in directory name
-	local output_dir
-	output_dir=$(echo "$output" | grep "Output written to directory:" | sed 's/.*directory: //')
-	[[ "$output_dir" == *"/feature_my-feature/"* ]]
-
-	rm -rf "$output_dir"
-}
-
-@test "integration:: paginated output directory naming" {
-	create_test_repo "$TEST_DIR"
-
-	run "$SCRIPT" -p "$TEST_DIR" -b "master" -a "Author One" --page-size 3
-
-	[[ "$status" -eq 0 ]]
-	echo "$output" | grep -q "Output written to directory:"
-
-	# Verify directory follows format: {repo_name}/{branch}/{author}/{pages}
-	local output_dir
-	output_dir=$(echo "$output" | grep "Output written to directory:" | sed 's/.*directory: //')
-	[[ -d "$output_dir" ]]
 	local repo_name
 	repo_name=$(basename "$TEST_DIR")
-	local expected_dir="$HOME/tmaatw/${repo_name}/master/author_one/1"
-	[[ "$output_dir" == "$expected_dir" ]]
-
-	rm -rf "$output_dir"
-}
-
-@test "integration:: page file naming and content" {
-	create_test_repo "$TEST_DIR"
-
-	# Test User has 1 commit, page_size=1 should create exactly one page file
-	run "$SCRIPT" -p "$TEST_DIR" -b "master" -a "Test User" --page-size 1
-
-	[[ "$status" -eq 0 ]]
-
-	local output_dir
-	output_dir=$(echo "$output" | grep "Output written to directory:" | sed 's/.*directory: //')
+	local output_dir="${OUTPUT_DIR}/${repo_name}/feature_my-feature/author_one"
 	[[ -d "$output_dir" ]]
 
-	# Check that page file exists with new naming pattern page_N_hash_hash.txt
-	local page_files=("$output_dir"/page_1_*.txt)
-	[[ ${#page_files[@]} -eq 1 ]]
-	[[ -f "${page_files[0]}" ]]
-
-	# Verify no second page file exists
-	[[ $(find "$output_dir" -name "page_2_*.txt" -type f 2>/dev/null | wc -l) -eq 0 ]]
-
-	local commit_count
-	commit_count=$(grep -c "Initial commit" "${page_files[0]}")
-	[[ $commit_count -eq 1 ]]
-
-	rm -rf "$output_dir"
 }

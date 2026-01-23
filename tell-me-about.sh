@@ -4,53 +4,114 @@
 # within a time range from a git repository and saves them to a file.
 #
 
+set -eo pipefail
+
 usage() {
 	cat <<EOF
-Usage: $(basename "$0") -p <path> -b <branch> -a <author> [--page-size <number>] [--range <date> | --range <start_date> <end_date>] [--github]
+Usage: $(basename "$0") -p <path> -b <branch> -a <author> [--range <date> | --range <start_date> <end_date>] [--sha <commit> ...] [--include-merges] [--github] [--jira]
 
-Analyze git commits by author and save detailed information to a file.
+Analyze git commits by author and save detailed information to commit-specific directories.
+
+Each commit is saved to: OUTPUT_DIR/REPO_NAME/BRANCH/AUTHOR/SHORT_COMMIT/
+  - pr.json  : Pull request details (if --github is used)
+  - diff.txt : Commit message and changed files
+  - jira.txt : JIRA ticket details (if --jira is used)
 
 Options:
-  -p <path>           : Path to the repository (required)
-  -b <branch>         : Branch to analyze (required)
-  -a <author>         : Author of commits (required)
-  --page-size <number>: Number of commits per output file (0 for single file, default: 0)
-  --range <date>      : Analyze commits since date (one arg) or between two dates (two args)
-  --github            : Include GitHub details for commits, such as pull request information (requires GitHub CLI)
-  -h, --help          : Show this help message
+  -p <path>      : Path to the repository (required)
+  -b <branch>    : Branch to analyze (required)
+  -a <author>    : Author of commits (required)
+  --range <date> : Analyze commits since date (one arg) or between two dates (two args)
+  --sha <commit> : Analyze specific commit(s) by SHA (can be used multiple times, replaces --range)
+  --include-merges : Include merge commits with subjects matching author
+  --github         : Include GitHub details for commits, such as pull request information (requires GitHub CLI)
+  --jira         : Include JIRA ticket details for commits that reference tickets (requires JIRA CLI)
+  -h, --help     : Show this help message
 
 EOF
 }
 
-OUTPUT_DIR="$HOME/tmaatw"
+########################################
+# Constants
+########################################
+DEFAULT_OUTPUT_DIR="tmaatw"
+DEFAULT_GITHUB_SCRIPT="tools/github.sh"
+DEFAULT_JIRA_SCRIPT="tools/jira.sh"
 
-# Get script directory for locating tools
-SCRIPT_DIR=""
-if [[ -n "${BASH_SOURCE[0]}" ]]; then
-	script_path="${BASH_SOURCE[0]}"
-	if [[ -L "$script_path" ]]; then
-		script_path=$(readlink -f "$script_path" 2>/dev/null || echo "$script_path")
-	fi
-	SCRIPT_DIR=$(dirname "$script_path")
-	export SCRIPT_DIR
-fi
+########################################
+# Input Defaults
+########################################
+OUTPUT_DIR="${OUTPUT_DIR:-}"
+REPO_PATH="${REPO_PATH:-}"
+BRANCH="${BRANCH:-}"
+AUTHOR="${AUTHOR:-}"
+RANGE_DATE1="${RANGE_DATE1:-}"
+RANGE_DATE2="${RANGE_DATE2:-}"
+COMMIT_SHAS=()
+INCLUDE_MERGES="${INCLUDE_MERGES:-false}"
+CHECK_GITHUB="${CHECK_GITHUB:-false}"
+CHECK_JIRA="${CHECK_JIRA:-false}"
 
-# Validation functions and configuration setup
-# Validate that required arguments are provided
-#
-# Inputs:
-# - $1: repo_path
-# - $2: branch
-# - $3: author
+########################################
+# Helper Functions
+########################################
+
+cleanup() {
+	popd >/dev/null 2>&1 || true
+	return 0
+}
+
+# Initialize script paths and output directory
 #
 # Side Effects:
-# - Exits with error message if validation fails
-validate_required_args() {
-	local repo_path="$1"
-	local branch="$2"
-	local author="$3"
+# - Sets OUTPUT_DIR, GITHUB_SCRIPT, JIRA_SCRIPT globals
+initialize_script_context() {
+	local script_path=""
+	local script_dir=""
 
-	if [[ -z "$repo_path" || -z "$branch" || -z "$author" ]]; then
+	if [[ -z "${OUTPUT_DIR}" ]]; then
+		OUTPUT_DIR="${HOME}/${DEFAULT_OUTPUT_DIR}"
+	fi
+
+	if [[ -z "${BASH_SOURCE[0]:-}" ]]; then
+		echo "initialize_script_context:: BASH_SOURCE is not set" >&2
+		return 1
+	fi
+
+	script_path="${BASH_SOURCE[0]}"
+	if [[ -z "$script_path" ]]; then
+		echo "initialize_script_context:: Script path is empty" >&2
+		return 1
+	fi
+
+	if [[ -L "$script_path" ]]; then
+		if command -v readlink >/dev/null 2>&1; then
+			if [[ $(uname) == "Darwin" ]]; then
+				script_path=$(readlink "$script_path" 2>/dev/null || echo "$script_path")
+			else
+				script_path=$(readlink -f "$script_path" 2>/dev/null || echo "$script_path")
+			fi
+		fi
+	fi
+
+	if [[ "$script_path" != /* ]]; then
+		script_path="$(cd "$(dirname "$script_path")" && pwd)/$(basename "$script_path")"
+	fi
+
+	script_dir=$(dirname "$script_path")
+	if [[ -z "$script_dir" ]]; then
+		echo "initialize_script_context:: SCRIPT_DIR resolution failed" >&2
+		return 1
+	fi
+
+	GITHUB_SCRIPT="${script_dir}/${DEFAULT_GITHUB_SCRIPT}"
+	JIRA_SCRIPT="${script_dir}/${DEFAULT_JIRA_SCRIPT}"
+
+	return 0
+}
+
+validate_required_args() {
+	if [[ -z "$REPO_PATH" || -z "$BRANCH" || -z "$AUTHOR" ]]; then
 		echo "validate_required_args:: Missing required arguments" >&2
 		usage
 		return 1
@@ -59,47 +120,24 @@ validate_required_args() {
 	return 0
 }
 
-# Validate that the repository path exists and is a directory
-#
-# Inputs:
-# - $1: repo_path
-#
-# Side Effects:
-# - Exits with error message if validation fails
 validate_repo_path() {
-	local repo_path="$1"
-
-	if [[ ! -d "$repo_path" ]]; then
-		echo "validate_repo_path:: Invalid repository path: $repo_path" >&2
+	if [[ ! -d "$REPO_PATH" ]]; then
+		echo "validate_repo_path:: Invalid repository path: $REPO_PATH" >&2
 		return 1
 	fi
 
 	return 0
 }
 
-# Change to the repository directory
-#
-# Inputs:
-# - $1: repo_path
-#
-# Side Effects:
-# - Changes current working directory
 change_to_repo() {
-	local repo_path="$1"
-
-	if ! pushd "$repo_path" >/dev/null; then
-		echo "change_to_repo:: Failed to change directory to $repo_path" >&2
+	if ! pushd "$REPO_PATH" >/dev/null; then
+		echo "change_to_repo:: Failed to change directory to $REPO_PATH" >&2
 		return 1
 	fi
 
 	return 0
 }
 
-# Helper functions used by main functionality
-# Get the repository name from git
-#
-# Side Effects:
-# - Sets REPO_NAME global variable
 get_repo_name() {
 	if ! REPO_NAME=$(basename "$(git rev-parse --show-toplevel 2>/dev/null)"); then
 		echo "get_repo_name:: Failed to get repository name" >&2
@@ -110,206 +148,104 @@ get_repo_name() {
 	return 0
 }
 
-# Check if author exists in git history
-#
-# Inputs:
-# - $1: author
-#
-# Side Effects:
-# - None
 validate_author_exists() {
-	local author="$1"
-
-	# Check if git log produces any output for this author
-	if ! git log --author="$author" --max-count=1 --oneline >/dev/null 2>&1; then
-		echo "validate_author_exists:: Author '$author' not found in the commit history" >&2
+	if ! git log --author="$AUTHOR" --max-count=1 --oneline >/dev/null 2>&1; then
+		echo "validate_author_exists:: Author '$AUTHOR' not found in the commit history" >&2
 		return 1
 	fi
 
-	# Also check that we actually got output, git log succeeds even with no results
 	local author_output
-	author_output=$(git log --author="$author" --max-count=1 --oneline 2>/dev/null)
+	author_output=$(git log --author="$AUTHOR" --max-count=1 --oneline 2>/dev/null)
 	if [[ -z "$author_output" ]]; then
-		echo "validate_author_exists:: Author '$author' not found in the commit history" >&2
+		echo "validate_author_exists:: Author '$AUTHOR' not found in the commit history" >&2
 		return 1
 	fi
 
 	return 0
 }
 
-# Validate that date strings can be parsed as valid dates
-#
-# Inputs:
-# - $1: date_string
-#
-# Side Effects:
-# - None
-validate_date() {
+validate_commit_shas() {
+	local sha
+
+	if [[ ${#COMMIT_SHAS[@]} -eq 0 ]]; then
+		return 0
+	fi
+
+	for sha in "${COMMIT_SHAS[@]}"; do
+		if ! git rev-parse "$sha" >/dev/null 2>&1; then
+			echo "validate_commit_shas:: Commit '$sha' not found in git history" >&2
+			return 1
+		fi
+	done
+
+	return 0
+}
+
+parse_date() {
 	local date_string="$1"
+	local result=""
 
-	# Use date command to validate the date string
-	if ! date -d "$date_string" >/dev/null 2>&1; then
-		echo "validate_date:: Invalid date format: $date_string" >&2
+	if [[ -z "$date_string" ]]; then
+		echo "parse_date:: date_string is required" >&2
 		return 1
 	fi
 
-	return 0
-}
-
-# Validate that page_size is a non-negative integer
-#
-# Inputs:
-# - $1: page_size
-#
-# Side Effects:
-# - None
-validate_page_size() {
-	local page_size="$1"
-
-	# Check if it's a number
-	if ! [[ "$page_size" =~ ^[0-9]+$ ]]; then
-		echo "validate_page_size:: Page size must be a non-negative integer: $page_size" >&2
+	if [[ "$date_string" != "1 week ago" ]] && [[ ! "$date_string" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+		echo "parse_date:: Unsupported date format: $date_string" >&2
 		return 1
 	fi
 
-	return 0
-}
-
-# Initialize PR summary file
-#
-# Inputs:
-# - $1: prs_file
-# - $2: repo_name
-# - $3: branch
-# - $4: author
-# - $5: period_start
-# - $6: period_end
-#
-# Side Effects:
-# - Creates or overwrites the PR summary file
-initialize_prs_file() {
-	local prs_file="$1"
-	local repo_name="$2"
-	local branch="$3"
-	local author="$4"
-	local period_start="$5"
-	local period_end="$6"
-
-	if [[ -z "$prs_file" || -z "$repo_name" || -z "$branch" || -z "$author" ]]; then
-		echo "initialize_prs_file:: Required values are missing" >&2
-		return 1
-	fi
-
-	local range_line="Range: not set"
-	if [[ -n "$period_start" && -n "$period_end" ]]; then
-		range_line="Range: ${period_start} to ${period_end}"
-	fi
-
-	cat <<EOF >"$prs_file"
-# Pull Requests
-
-Repository: ${repo_name}
-Branch: ${branch}
-Author: ${author}
-${range_line}
-
-EOF
-
-	return 0
-}
-
-# Calculate total page count from commit count and page size
-#
-# Inputs:
-# - $1: commit_count
-# - $2: page_size
-#
-# Side Effects:
-# - Outputs page count to stdout
-calculate_pages_count() {
-	local commit_count="$1"
-	local page_size="$2"
-
-	if [[ -z "$commit_count" || -z "$page_size" ]]; then
-		echo "calculate_pages_count:: commit_count or page_size is not set" >&2
-		return 1
-	fi
-
-	if ! [[ "$commit_count" =~ ^[0-9]+$ ]]; then
-		echo "calculate_pages_count:: commit_count must be a non-negative integer: $commit_count" >&2
-		return 1
-	fi
-
-	if ! [[ "$page_size" =~ ^[0-9]+$ ]]; then
-		echo "calculate_pages_count:: page_size must be a non-negative integer: $page_size" >&2
-		return 1
-	fi
-
-	local pages_count=0
-	if [[ "$commit_count" -eq 0 ]]; then
-		pages_count=0
-	elif [[ "$page_size" -eq 0 ]]; then
-		pages_count=1
+	if [[ $(uname) == "Darwin" ]]; then
+		if [[ "$date_string" == "1 week ago" ]]; then
+			if ! result=$(date -v-1w +%Y-%m-%d 2>/dev/null); then
+				return 1
+			fi
+		else
+			if ! result=$(date -j -f "%Y-%m-%d" "$date_string" +%Y-%m-%d 2>/dev/null); then
+				return 1
+			fi
+		fi
 	else
-		pages_count=$(((commit_count + page_size - 1) / page_size))
+		if ! result=$(date -d "$date_string" +%Y-%m-%d 2>/dev/null); then
+			return 1
+		fi
 	fi
 
-	echo "$pages_count"
+	echo "$result"
+
 	return 0
 }
 
-# Check if GitHub CLI (gh) is installed and authenticated
-#
-# Side Effects:
-# - None
-check_gh_cli() {
-	if ! command -v gh >/dev/null 2>&1; then
-		echo "check_gh_cli:: GitHub CLI (gh) is not installed" >&2
+check_dependencies() {
+	local missing=0
+
+	for cmd in git sed tr wc date; do
+		if ! command -v "$cmd" >/dev/null 2>&1; then
+			echo "check_dependencies:: Missing required command: $cmd" >&2
+			missing=1
+		fi
+	done
+
+	if [[ "$missing" -ne 0 ]]; then
 		return 1
 	fi
 
-	if ! gh auth status >/dev/null 2>&1; then
-		echo "check_gh_cli:: GitHub CLI is not authenticated" >&2
-		echo "check_gh_cli:: Running 'gh auth login --web --hostname github.com'" >&2
-		if ! gh auth login --web --hostname github.com; then
-			echo "check_gh_cli:: Failed to authenticate with GitHub CLI" >&2
-			return 1
-		fi
-		if ! gh auth status >/dev/null 2>&1; then
-			echo "check_gh_cli:: Authentication completed but status check failed" >&2
-			return 1
-		fi
-	fi
-
 	return 0
 }
 
-# Determine period start and end dates for filename
-#
-# Inputs:
-# - $1: range_date1
-# - $2: range_date2
-#
-# Side Effects:
-# - Sets PERIOD_START and PERIOD_END global variables
 determine_period_dates() {
-	local range_date1="$1"
-	local range_date2="$2"
-
-	if [[ -n "$range_date1" && -n "$range_date2" ]]; then
-		# Two dates provided: between range_date1 and range_date2
-		if ! PERIOD_START=$(date -d "$range_date1" +%Y-%m-%d 2>/dev/null); then
-			echo "determine_period_dates:: Failed to parse date: $range_date1" >&2
+	if [[ -n "$RANGE_DATE1" && -n "$RANGE_DATE2" ]]; then
+		if ! PERIOD_START=$(parse_date "$RANGE_DATE1"); then
+			echo "determine_period_dates:: Failed to parse date: $RANGE_DATE1" >&2
 			return 1
 		fi
-		if ! PERIOD_END=$(date -d "$range_date2" +%Y-%m-%d 2>/dev/null); then
-			echo "determine_period_dates:: Failed to parse date: $range_date2" >&2
+		if ! PERIOD_END=$(parse_date "$RANGE_DATE2"); then
+			echo "determine_period_dates:: Failed to parse date: $RANGE_DATE2" >&2
 			return 1
 		fi
-	elif [[ -n "$range_date1" ]]; then
-		# One date provided: since range_date1 to now
-		if ! PERIOD_START=$(date -d "$range_date1" +%Y-%m-%d 2>/dev/null); then
-			echo "determine_period_dates:: Failed to parse date: $range_date1" >&2
+	elif [[ -n "$RANGE_DATE1" ]]; then
+		if ! PERIOD_START=$(parse_date "$RANGE_DATE1"); then
+			echo "determine_period_dates:: Failed to parse date: $RANGE_DATE1" >&2
 			return 1
 		fi
 		if ! PERIOD_END=$(date +%Y-%m-%d 2>/dev/null); then
@@ -317,8 +253,7 @@ determine_period_dates() {
 			return 1
 		fi
 	else
-		# No dates provided: 1 week ago to now
-		if ! PERIOD_START=$(date -d "1 week ago" +%Y-%m-%d 2>/dev/null); then
+		if ! PERIOD_START=$(parse_date "1 week ago"); then
 			echo "determine_period_dates:: Failed to calculate date one week ago" >&2
 			return 1
 		fi
@@ -331,120 +266,164 @@ determine_period_dates() {
 	return 0
 }
 
-# Core logic functions
-# Get list of commits for the specified author and time range
-#
-# Inputs:
-# - $1: author
-# - $2: range_date1 (optional, start date or single date)
-# - $3: range_date2 (optional, end date)
-# - $4: branch
-#
-# Side Effects:
-# - Sets COMMITS global variable
 get_commits() {
-	local author="$1"
-	local range_date1="$2"
-	local range_date2="$3"
-	local branch="$4"
+	local sha
+	local short_hash
+	local log_output
+	local author_lower
+	local since_date=""
+	local until_date=""
 
-	local git_log_cmd=(git log --author="$author" --pretty=format:"%h")
-
-	# Add date range arguments
-	if [[ -n "$range_date1" && -n "$range_date2" ]]; then
-		# Two dates provided: between range_date1 and range_date2
-		git_log_cmd+=(--since="$range_date1" --until="$range_date2")
-	elif [[ -n "$range_date1" ]]; then
-		# One date provided: since range_date1
-		git_log_cmd+=(--since="$range_date1")
-	else
-		# No dates provided: use default of 1 week ago
-		git_log_cmd+=(--since="1 week ago")
+	if [[ ${#COMMIT_SHAS[@]} -gt 0 ]]; then
+		COMMITS=""
+		for sha in "${COMMIT_SHAS[@]}"; do
+			if ! short_hash=$(git rev-parse --short "$sha" 2>/dev/null); then
+				echo "get_commits:: Failed to get short hash for commit: $sha" >&2
+				continue
+			fi
+			if [[ -z "$COMMITS" ]]; then
+				COMMITS="$short_hash"
+			else
+				COMMITS="${COMMITS}"$'\n'"${short_hash}"
+			fi
+		done
+		return 0
 	fi
 
-	git_log_cmd+=("$branch")
+	if [[ -n "$PERIOD_START" && -n "$PERIOD_END" ]]; then
+		since_date="${PERIOD_START} 00:00:00"
+		until_date="${PERIOD_END} 23:59:59"
+	elif [[ -n "$PERIOD_START" ]]; then
+		since_date="${PERIOD_START} 00:00:00"
+	else
+		since_date="1 week ago"
+	fi
 
-	if ! COMMITS=$("${git_log_cmd[@]}" 2>/dev/null); then
+	local git_log_cmd=(git log --pretty=format:"%h%x1f%an%x1f%ae%x1f%s%x1f%P")
+	if [[ -n "$since_date" ]]; then
+		git_log_cmd+=(--since="$since_date")
+	fi
+	if [[ -n "$until_date" ]]; then
+		git_log_cmd+=(--until="$until_date")
+	fi
+
+	git_log_cmd+=("$BRANCH")
+
+	if ! log_output=$("${git_log_cmd[@]}" 2>/dev/null); then
 		echo "get_commits:: Failed to get commit list" >&2
 		return 1
 	fi
 
+	if ! author_lower=$(echo "$AUTHOR" | tr '[:upper:]' '[:lower:]' 2>/dev/null); then
+		author_lower="$AUTHOR"
+	fi
+
+	COMMITS=""
+	local hash
+	local name
+	local email
+	local subject
+	local parents
+	while IFS=$'\x1f' read -r hash name email subject parents; do
+		if [[ -z "$hash" ]]; then
+			continue
+		fi
+
+		local name_lower
+		local email_lower
+		local subject_lower
+		if ! name_lower=$(echo "$name" | tr '[:upper:]' '[:lower:]' 2>/dev/null); then
+			name_lower="$name"
+		fi
+		if ! email_lower=$(echo "$email" | tr '[:upper:]' '[:lower:]' 2>/dev/null); then
+			email_lower="$email"
+		fi
+		if ! subject_lower=$(echo "$subject" | tr '[:upper:]' '[:lower:]' 2>/dev/null); then
+			subject_lower="$subject"
+		fi
+
+		local include_commit="false"
+		if [[ "$name_lower" == *"$author_lower"* ]] || [[ "$email_lower" == *"$author_lower"* ]]; then
+			include_commit="true"
+		elif [[ "$INCLUDE_MERGES" == "true" ]]; then
+			local parent_count=0
+			local parent
+			for parent in $parents; do
+				((++parent_count))
+			done
+
+			if ((parent_count > 1)) && [[ "$subject_lower" == *"${author_lower}"* ]]; then
+				include_commit="true"
+			fi
+		fi
+
+		if [[ "$include_commit" == "true" ]]; then
+			if [[ -z "$COMMITS" ]]; then
+				COMMITS="$hash"
+			else
+				COMMITS="${COMMITS}"$'\n'"$hash"
+			fi
+		fi
+	done <<<"$log_output"
+
 	return 0
 }
 
-# Write commit details to output file
-#
-# Inputs:
-# - $1: commit_hash
-# - $2: output_file
-#
-# Side Effects:
-# - Appends to the output file
 write_commit_details() {
 	local commit="$1"
 	local output_file="$2"
 
+	if [[ -z "$commit" || -z "$output_file" ]]; then
+		echo "write_commit_details:: commit or output_file is not set" >&2
+		return 1
+	fi
+
+	if [[ -f "$output_file" ]]; then
+		return 0
+	fi
+
 	if ! git log -p --format="%B" -n 1 "$commit" >>"$output_file" 2>/dev/null; then
-		echo "write_commit_details:: Warning: Failed to get commit details for $commit" >&2
+		echo "write_commit_details:: Failed to get commit details for $commit" >&2
 	fi
 
 	if ! git diff-tree --no-commit-id --name-only -r "$commit" >>"$output_file" 2>/dev/null; then
-		echo "write_commit_details:: Warning: Failed to get changed files for $commit" >&2
+		echo "write_commit_details:: Failed to get changed files for $commit" >&2
 	fi
 
 	return 0
 }
 
-# Write PR details to summary file
-#
-# Inputs:
-# - $1: commit_hash
-# - $2: prs_file
-#
-# Side Effects:
-# - Appends PR details to the summary file when available
-write_pr_details() {
-	local commit="$1"
-	local prs_file="$2"
+sanitize_names() {
+	local author="$1"
+	local branch="$2"
 
-	if [[ -z "$commit" || -z "$prs_file" ]]; then
-		echo "write_pr_details:: commit or prs_file is not set" >&2
+	if [[ -z "$author" || -z "$branch" ]]; then
+		echo "sanitize_names:: author or branch is not set" >&2
 		return 1
 	fi
 
-	local check_github_script="${SCRIPT_DIR}/tools/github.sh"
-	if [[ ! -f "$check_github_script" ]]; then
-		echo "write_pr_details:: GitHub script not found: $check_github_script" >&2
-		return 1
+	local sanitized_author
+	if ! sanitized_author=$(echo "$author" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/_/g'); then
+		echo "sanitize_names:: Failed to sanitize author name" >&2
+		sanitized_author=$(echo "$author" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/_/g' || echo "unknown_author")
 	fi
 
-	if "$check_github_script" "$commit" >>"$prs_file" 2>/dev/null; then
-		echo "" >>"$prs_file"
+	local sanitized_branch
+	if ! sanitized_branch=$(tr -c 'a-zA-Z0-9_-' '_' <<<"$branch" | sed 's/_$//'); then
+		echo "sanitize_names:: Failed to sanitize branch name" >&2
+		sanitized_branch=$(tr -c 'a-zA-Z0-9_-' '_' <<<"$branch" | sed 's/_$//' || echo "unknown_branch")
 	fi
+
+	echo "${sanitized_author}"
+	echo "${sanitized_branch}"
 
 	return 0
 }
 
-# Process all commits and write to paginated files
-#
-# Inputs:
-# - $1: output_path (directory containing page files)
-# - $2: page_size, 0 means all commits in one page
-# - $3: check_github (optional, "true" to include GitHub details)
-# - $4: prs_file (optional, output file for PR details)
-#
-# Side Effects:
-# - Creates page files in the output directory
 process_commits() {
-	local output_path="$1"
-	local page_size="$2"
-	local check_github="${3:-false}"
-	local prs_file="${4:-}"
 	local commit_count=0
-	local page_number=1
-	local current_file=""
+	COMMIT_DIRS=()
 
-	# Convert COMMITS to array for easier processing
 	local commit_array=()
 	while read -r commit; do
 		if [[ -n "$commit" ]]; then
@@ -454,65 +433,80 @@ process_commits() {
 
 	local total_commits=${#commit_array[@]}
 
-	# Process commits with consistent page file structure
-	local commits_in_page=0
-	local page_commits=()
-	local first_commit_hash=""
-	local last_commit_hash=""
+	if [[ $total_commits -eq 0 ]]; then
+		echo "No commits found"
+		return 0
+	fi
 
 	for commit in "${commit_array[@]}"; do
-		# Start new page if needed
-		if [[ $commits_in_page -eq 0 ]]; then
-			first_commit_hash="$commit"
-			page_commits=()
+		((++commit_count))
+		COMMIT="$commit"
+
+		local short_commit
+		if ! short_commit=$(git rev-parse --short "$commit" 2>/dev/null); then
+			echo "process_commits:: Failed to get short commit hash for $commit" >&2
+			continue
 		fi
 
-		page_commits+=("$commit")
-		last_commit_hash="$commit"
-		((commit_count++))
-		((commits_in_page++))
-
-		# Check if page is complete, full or last commit
-		local page_complete=0
-		if [[ "$page_size" -gt 0 ]] && [[ $commits_in_page -eq "$page_size" ]]; then
-			page_complete=1
-		elif [[ $commit_count -eq $total_commits ]]; then
-			page_complete=1
+		local commit_dir="${OUTPUT_PATH}/${short_commit}"
+		if ! mkdir -p "$commit_dir" 2>/dev/null; then
+			echo "process_commits:: Failed to create commit directory: $commit_dir" >&2
+			continue
 		fi
+		COMMIT_DIRS+=("$commit_dir")
 
-		if [[ $page_complete -eq 1 ]]; then
-			# Write all commits in page to final filename
-			current_file="$output_path/page_${page_number}_${first_commit_hash:0:7}_${last_commit_hash:0:7}.txt"
-			for page_commit in "${page_commits[@]}"; do
-				write_commit_details "$page_commit" "$current_file"
-				if [[ "$check_github" == "true" && -n "$prs_file" ]]; then
-					write_pr_details "$page_commit" "$prs_file"
-				fi
-			done
-			# Start new page if current page is full, but not if it's just the last commit
-			if [[ "$page_size" -gt 0 ]] && [[ $commits_in_page -eq "$page_size" ]]; then
-				commits_in_page=0
-				((page_number++))
+		echo "$short_commit"
+		echo "========"
+
+		local diff_file="${commit_dir}/diff.txt"
+		if [[ ! -f "$diff_file" ]]; then
+			if ! write_commit_details "$commit" "$diff_file"; then
+				echo "process_commits:: Failed to write commit details for $commit" >&2
 			fi
 		fi
-	done
 
-	echo "process_commits:: Processed $commit_count commits"
+		if [[ "$CHECK_JIRA" == "true" ]]; then
+			local jira_file="${commit_dir}/jira.txt"
+			local jira_status=""
+			JIRA_FILE="$jira_file"
+			if write_jira_details_to_file; then
+				if [[ -s "$jira_file" ]]; then
+					jira_status="Wrote to $jira_file"
+				else
+					jira_status="No tickets $jira_file"
+				fi
+			else
+				jira_status="Failed | $jira_file"
+			fi
+			echo "jira: $jira_status"
+		fi
+
+		if [[ "$CHECK_GITHUB" == "true" ]]; then
+			local pr_file="${commit_dir}/pr.json"
+			local github_status=""
+			if [[ -f "$pr_file" ]]; then
+				github_status="$pr_file"
+			else
+				PR_FILE="$pr_file"
+				if write_pr_details_to_file; then
+					if [[ -f "$pr_file" ]]; then
+						github_status="Wrote to $pr_file"
+					else
+						github_status="No PRs | $pr_file"
+					fi
+				else
+					github_status="Failed | $pr_file"
+				fi
+			fi
+			echo "github: $github_status"
+		fi
+	done
 	return 0
 }
 
-# Main entry point
 main() {
-	# Set trap handler for cleanup on exit/error
-	trap 'popd >/dev/null 2>&1 || true' EXIT ERR
-
-	local repo_path=""
-	local branch=""
-	local author=""
-	local range_date1=""
-	local range_date2=""
-	local page_size=0
-	local check_github=false
+	trap cleanup EXIT
+	trap 'popd >/dev/null 2>&1 || true' ERR
 
 	while [[ $# -gt 0 ]]; do
 		case $1 in
@@ -521,40 +515,55 @@ main() {
 			return 0
 			;;
 		-p)
-			repo_path="$2"
+			REPO_PATH="$2"
 			shift 2
 			;;
 		-b)
-			branch="$2"
+			BRANCH="$2"
 			shift 2
 			;;
 		-a)
-			author="$2"
+			AUTHOR="$2"
 			shift 2
 			;;
 		--range)
-			if [[ -n "$range_date1" ]]; then
+			if [[ ${#COMMIT_SHAS[@]} -gt 0 ]]; then
+				echo "main:: --range cannot be used with --sha" >&2
+				return 1
+			fi
+			if [[ -n "$RANGE_DATE1" ]]; then
 				echo "main:: --range option can only be used once" >&2
 				return 1
 			fi
-			range_date1="$2"
+			RANGE_DATE1="$2"
 			shift 2
-			# Check if there's a second date argument
 			if [[ $# -gt 0 && "$1" != -* ]]; then
-				range_date2="$1"
+				RANGE_DATE2="$1"
 				shift 1
 			fi
 			;;
-		--page-size)
-			if [[ -n "$page_size" && "$page_size" != "0" ]]; then
-				echo "main:: --page-size option can only be used once" >&2
+		--sha)
+			if [[ -n "$RANGE_DATE1" ]]; then
+				echo "main:: --sha cannot be used with --range" >&2
 				return 1
 			fi
-			page_size="$2"
+			if [[ -z "$2" ]]; then
+				echo "main:: --sha requires a commit hash" >&2
+				return 1
+			fi
+			COMMIT_SHAS+=("$2")
 			shift 2
 			;;
+		--include-merges)
+			INCLUDE_MERGES=true
+			shift
+			;;
 		--github)
-			check_github=true
+			CHECK_GITHUB=true
+			shift
+			;;
+		--jira)
+			CHECK_JIRA=true
 			shift
 			;;
 		*)
@@ -565,142 +574,111 @@ main() {
 		esac
 	done
 
-	# Check for jq if GitHub features are requested
-	if [[ "$check_github" == "true" ]]; then
-		if ! command -v jq >/dev/null 2>&1; then
-			echo "main:: jq is required for --github option but is not installed" >&2
-			return 1
-		fi
-	fi
-
-	# Validate required arguments
-	if ! validate_required_args "$repo_path" "$branch" "$author"; then
+	if ! initialize_script_context; then
 		return 1
 	fi
 
-	# Validate repository path
-	if ! validate_repo_path "$repo_path"; then
+	if ! check_dependencies; then
 		return 1
 	fi
 
-	# Change to repository directory
-	if ! change_to_repo "$repo_path"; then
+	if ! validate_required_args; then
 		return 1
 	fi
 
-	# Get repository name
+	if ! validate_repo_path; then
+		return 1
+	fi
+
+	if ! change_to_repo; then
+		return 1
+	fi
+
 	if ! get_repo_name; then
 		popd >/dev/null || return 1
 		return 1
 	fi
 
-	# Validate page size
-	if ! validate_page_size "$page_size"; then
-		return 1
-	fi
-
-	# Validate dates if --range is used
-	if [[ -n "$range_date1" ]]; then
-		if ! validate_date "$range_date1"; then
-			popd >/dev/null || return 1
-			return 1
-		fi
-	fi
-	if [[ -n "$range_date2" ]]; then
-		if ! validate_date "$range_date2"; then
-			popd >/dev/null || return 1
-			return 1
-		fi
-	fi
-
-	# Validate author exists
-	if ! validate_author_exists "$author"; then
+	if ! validate_author_exists; then
 		popd >/dev/null || return 1
 		return 1
 	fi
 
-	# Validate GitHub CLI if GitHub details are requested
-	if [[ "$check_github" == "true" ]]; then
-		if ! check_gh_cli; then
+	if [[ ${#COMMIT_SHAS[@]} -eq 0 ]]; then
+		if ! determine_period_dates; then
 			popd >/dev/null || return 1
 			return 1
 		fi
-	fi
-
-	# Determine period dates for output filenames
-	if ! determine_period_dates "$range_date1" "$range_date2"; then
-		popd >/dev/null || return 1
-		return 1
-	fi
-
-	# Get commits
-	if ! get_commits "$author" "$range_date1" "$range_date2" "$branch"; then
-		popd >/dev/null || return 1
-		return 1
-	fi
-
-	# Display commit count
-	local commit_count
-	if [[ -z "$COMMITS" ]]; then
-		commit_count=0
 	else
-		if ! commit_count=$(echo "$COMMITS" | wc -l); then
-			echo "main:: Warning: Failed to count commits" >&2
-			commit_count=0
-		else
-			commit_count="${commit_count//[[:space:]]/}"
+		if ! validate_commit_shas; then
+			popd >/dev/null || return 1
+			return 1
 		fi
 	fi
-	echo "main:: Commit count: $commit_count"
+
+	if ! get_commits; then
+		popd >/dev/null || return 1
+		return 1
+	fi
+
+	local sanitized_names_output
+	if ! sanitized_names_output=$(sanitize_names "$AUTHOR" "$BRANCH"); then
+		echo "main:: Failed to sanitize names" >&2
+		popd >/dev/null || return 1
+		return 1
+	fi
 
 	local sanitized_author
-	if ! sanitized_author=$(echo "$author" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/_/g'); then
-		echo "main:: Warning: Failed to sanitize author name" >&2
-		sanitized_author=$(echo "$author" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/_/g' || echo "unknown_author")
-	fi
+	sanitized_author=$(echo "$sanitized_names_output" | head -n 1)
 	local sanitized_branch
-	if ! sanitized_branch=$(tr -c 'a-zA-Z0-9_-' '_' <<<"$branch" | sed 's/_$//'); then
-		echo "main:: Warning: Failed to sanitize branch name" >&2
-		sanitized_branch=$(tr -c 'a-zA-Z0-9_-' '_' <<<"$branch" | sed 's/_$//' || echo "unknown_branch")
-	fi
+	sanitized_branch=$(echo "$sanitized_names_output" | tail -n 1)
 
-	local pages_count
-	if ! pages_count=$(calculate_pages_count "$commit_count" "$page_size"); then
-		echo "main:: Failed to calculate page count" >&2
+	OUTPUT_PATH="$OUTPUT_DIR/${REPO_NAME}/${sanitized_branch}/${sanitized_author}"
+
+	if ! mkdir -p "$OUTPUT_PATH" 2>/dev/null; then
+		echo "main:: Failed to create output directory: $OUTPUT_PATH" >&2
 		popd >/dev/null || return 1
 		return 1
 	fi
 
-	local base_output_dir="$OUTPUT_DIR/${REPO_NAME}/${sanitized_branch}/${sanitized_author}"
-	local output_path="$base_output_dir/${pages_count}"
-
-	# Create output directory
-	if ! mkdir -p "$output_path" 2>/dev/null; then
-		echo "main:: Failed to create output directory: $output_path" >&2
-		popd >/dev/null || return 1
-		return 1
-	fi
-
-	local prs_file=""
-	if [[ "$check_github" == "true" ]]; then
-		prs_file="${base_output_dir}/prs.md"
-		if ! initialize_prs_file "$prs_file" "$REPO_NAME" "$sanitized_branch" "$sanitized_author" "$PERIOD_START" "$PERIOD_END"; then
-			popd >/dev/null || return 1
-			return 1
+	if [[ "$CHECK_GITHUB" == "true" ]]; then
+		if [[ -f "$GITHUB_SCRIPT" ]]; then
+			if ! source "$GITHUB_SCRIPT"; then
+				echo "main:: Failed to source GitHub script: $GITHUB_SCRIPT" >&2
+				popd >/dev/null || return 1
+				return 1
+			fi
 		fi
 	fi
 
-	# Process commits
-	process_commits "$output_path" "$page_size" "$check_github" "$prs_file"
+	if [[ "$CHECK_JIRA" == "true" ]]; then
+		if [[ -f "$JIRA_SCRIPT" ]]; then
+			if ! source "$JIRA_SCRIPT"; then
+				echo "main:: Failed to source JIRA script: $JIRA_SCRIPT" >&2
+				popd >/dev/null || return 1
+				return 1
+			fi
+		fi
+	fi
 
-	# Restore original directory (trap handler will also do this, but explicit is clearer)
+	process_commits
+
 	popd >/dev/null || true
 
-	echo "main:: Output written to directory: $output_path"
+	if (( ${#COMMIT_DIRS[@]} > 0 )); then
+		cat <<EOF
+Commit directories
+===============================
+
+EOF
+		local commit_dir
+		for commit_dir in "${COMMIT_DIRS[@]}"; do
+			echo "$commit_dir"
+		done
+	fi
 	return 0
 }
 
-# Allow script to be executed directly with arguments, or sourced
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
 	main "$@"
 	exit $?

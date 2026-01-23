@@ -3,29 +3,37 @@
 # Test suite for tools/github.sh
 #
 
-GIT_ROOT="$(git rev-parse --show-toplevel || echo "")"
-SCRIPT="${GIT_ROOT}/tools/github.sh"
-# shellcheck source=tools/github.sh
-[[ ! -f "$SCRIPT" ]] && echo "setup:: Script not found: $SCRIPT" >&2 && return 1
-
 setup_file() {
+	GIT_ROOT="$(git rev-parse --show-toplevel || echo "")"
+	SCRIPT="${GIT_ROOT}/tools/github.sh"
+	if [[ ! -f "$SCRIPT" ]]; then
+		echo "setup:: Script not found: $SCRIPT" >&2
+		return 1
+	fi
+
+	export GIT_ROOT
+	export SCRIPT
+
 	return 0
 }
 
 setup() {
 	# shellcheck source=tools/github.sh
-	source "$SCRIPT"
+	# Temporarily disable exit on error to prevent script from exiting when sourced
+	set +e
+	source "$SCRIPT" || true
+	set -e
 
 	TEST_DIR=$(mktemp -d)
 	export TEST_DIR
-
-	trap 'rm -rf "$TEST_DIR"' EXIT ERR
+	export COMMIT
+	export PR_FILE
 
 	return 0
 }
 
 teardown() {
-	[[ -d "$TEST_DIR" ]] && rm -rf "$TEST_DIR"
+	rm -rf "$TEST_DIR"
 	return 0
 }
 
@@ -45,22 +53,176 @@ create_test_repo() {
 	return 0
 }
 
+# check_github_dependencies
+@test "check_github_dependencies:: fails when jq is not installed" {
+	command() {
+		if [[ "$1" == "-v" ]]; then
+			if [[ "$2" == "jq" ]]; then
+				return 1
+			elif [[ "$2" == "gh" ]]; then
+				return 0
+			fi
+		fi
+		command "$@"
+	}
+
+	gh() {
+		if [[ "$1" == "auth" && "$2" == "status" ]]; then
+			return 0
+		fi
+		return 0
+	}
+
+	run check_github_dependencies
+	[[ "$status" -eq 1 ]]
+	echo "$output" | grep -q "jq is required"
+
+	unset -f command gh
+}
+
+@test "check_github_dependencies:: fails when gh is not installed" {
+	command() {
+		if [[ "$1" == "-v" ]]; then
+			if [[ "$2" == "jq" ]]; then
+				return 0
+			elif [[ "$2" == "gh" ]]; then
+				return 1
+			fi
+		fi
+		command "$@"
+	}
+
+	jq() {
+		return 0
+	}
+
+	run check_github_dependencies
+	[[ "$status" -eq 1 ]]
+	echo "$output" | grep -q "GitHub CLI.*not installed"
+
+	unset -f command jq
+}
+
+@test "check_github_dependencies:: succeeds when dependencies are available" {
+	gh() {
+		if [[ "$1" == "auth" && "$2" == "status" ]]; then
+			return 0
+		fi
+		return 0
+	}
+
+	jq() {
+		return 0
+	}
+
+	run check_github_dependencies
+	[[ "$status" -eq 0 ]]
+
+	unset -f gh jq
+}
+
+# initialize_prs_file
+@test "initialize_prs_file:: fails when prs_file is not set" {
+	run initialize_prs_file ""
+	[[ "$status" -eq 1 ]]
+	echo "$output" | grep -q "prs_file is not set"
+}
+
+@test "initialize_prs_file:: creates PRS file successfully" {
+	local prs_file="${TEST_DIR}/test_prs.md"
+
+	run initialize_prs_file "$prs_file"
+	[[ "$status" -eq 0 ]]
+	[[ -f "$prs_file" ]]
+}
+
+@test "initialize_prs_file:: fails when file cannot be created" {
+	local prs_file="/nonexistent/dir/test_prs.md"
+
+	run initialize_prs_file "$prs_file"
+	[[ "$status" -eq 1 ]]
+	echo "$output" | grep -q "Failed to create PRS file"
+}
+
+# write_pr_details
+@test "write_pr_details:: fails when commit is not set" {
+	local prs_file="${TEST_DIR}/test_prs.md"
+	touch "$prs_file"
+
+	COMMIT=""
+	PR_FILE="$prs_file"
+
+	run write_pr_details
+	[[ "$status" -eq 1 ]]
+	echo "$output" | grep -q "commit or pr_file is not set"
+}
+
+@test "write_pr_details:: fails when prs_file is not set" {
+	create_test_repo "$TEST_DIR"
+	cd "$TEST_DIR"
+
+	COMMIT="abc123"
+	PR_FILE=""
+	run write_pr_details
+	[[ "$status" -eq 1 ]]
+	echo "$output" | grep -q "commit or pr_file is not set"
+}
+
+@test "write_pr_details:: writes PR details to file" {
+	create_test_repo "$TEST_DIR"
+	cd "$TEST_DIR"
+
+	COMMIT=$(git rev-parse HEAD)
+	local prs_file="${TEST_DIR}/test_prs.md"
+	touch "$prs_file"
+
+	git remote add origin "https://github.com/owner/repo.git" 2>/dev/null || git remote set-url origin "https://github.com/owner/repo.git"
+	PR_FILE="$prs_file"
+
+	gh() {
+		if [[ "$1" == "auth" && "$2" == "status" ]]; then
+			return 0
+		elif [[ "$1" == "api" ]]; then
+			echo '[{"number": 123}]'
+		elif [[ "$1" == "pr" && "$2" == "view" ]]; then
+			echo '{"number": 123, "title": "Test PR"}'
+		fi
+		return 0
+	}
+
+	jq() {
+		if [[ "$1" == "-r" && "$2" == ".[].number" ]]; then
+			echo "123"
+		fi
+		return 0
+	}
+
+	run write_pr_details
+	[[ "$status" -eq 0 ]]
+	[[ -f "$prs_file" ]]
+
+	unset -f gh jq
+}
+
 # validate_required_args
 @test "validate_required_args:: fails with missing commit hash" {
-	run validate_required_args ""
+	COMMIT=""
+	run validate_required_args
 	[[ "$status" -eq 1 ]]
 	echo "$output" | grep -q "Missing required argument"
 }
 
 @test "validate_required_args:: succeeds with commit hash" {
-	run validate_required_args "abc123"
+	COMMIT="abc123"
+	run validate_required_args
 	[[ "$status" -eq 0 ]]
 }
 
 # validate_git_repo
 @test "validate_git_repo:: fails when not in git repository" {
-	cd "$TEST_DIR"
-	rm -rf .git 2>/dev/null || true
+	local no_repo_dir="${TEST_DIR}/no_repo"
+	mkdir -p "$no_repo_dir"
+	cd "$no_repo_dir"
 
 	run validate_git_repo
 	[[ "$status" -eq 1 ]]
@@ -80,7 +242,8 @@ create_test_repo() {
 	create_test_repo "$TEST_DIR"
 	cd "$TEST_DIR"
 
-	run validate_commit_exists "nonexistent123"
+	COMMIT="nonexistent123"
+	run validate_commit_exists
 	[[ "$status" -eq 1 ]]
 	echo "$output" | grep -q "not found in git history"
 }
@@ -89,60 +252,155 @@ create_test_repo() {
 	create_test_repo "$TEST_DIR"
 	cd "$TEST_DIR"
 
-	local commit_hash
-	commit_hash=$(git rev-parse HEAD)
-
-	run validate_commit_exists "$commit_hash"
+	COMMIT=$(git rev-parse HEAD)
+	run validate_commit_exists
 	[[ "$status" -eq 0 ]]
 }
 
-# main
-@test "main:: shows help correctly" {
-	run main --help
+@test "get_pr_details:: fails when commit hash cannot be resolved" {
+	create_test_repo "$TEST_DIR"
+	cd "$TEST_DIR"
+
+	COMMIT="test123"
+	export COMMIT
+	git remote add origin "https://github.com/owner/repo.git" 2>/dev/null || git remote set-url origin "https://github.com/owner/repo.git"
+
+	git() {
+		if [[ "$1" == "rev-parse" ]]; then
+			return 1
+		fi
+		command git "$@"
+	}
+
+	run get_pr_details
+	[[ "$status" -eq 1 ]]
+	echo "$output" | grep -q "Failed to resolve commit hash"
+
+	unset -f git
+}
+
+@test "get_pr_details:: fails when git remote URL cannot be retrieved" {
+	create_test_repo "$TEST_DIR"
+	cd "$TEST_DIR"
+
+	COMMIT=$(git rev-parse HEAD)
+
+	git remote remove origin 2>/dev/null || true
+
+	run get_pr_details
+	[[ "$status" -eq 1 ]]
+	echo "$output" | grep -q "Failed to get git remote URL"
+}
+
+@test "get_pr_details:: fails with unsupported remote URL format" {
+	create_test_repo "$TEST_DIR"
+	cd "$TEST_DIR"
+
+	COMMIT=$(git rev-parse HEAD)
+
+	git remote add origin "unsupported://example.com/repo.git" 2>/dev/null || git remote set-url origin "unsupported://example.com/repo.git"
+
+	run get_pr_details
+	[[ "$status" -eq 1 ]]
+	echo "$output" | grep -q "Unsupported git remote URL format"
+}
+
+@test "get_pr_details:: returns empty when no PRs found" {
+	create_test_repo "$TEST_DIR"
+	cd "$TEST_DIR"
+
+	COMMIT=$(git rev-parse HEAD)
+
+	git remote add origin "https://github.com/owner/repo.git" 2>/dev/null || git remote set-url origin "https://github.com/owner/repo.git"
+
+	# shellcheck disable=SC2329
+	gh() {
+		if [[ "$1" == "api" ]]; then
+			echo "[]"
+		fi
+		return 0
+	}
+
+	run get_pr_details
+	[[ "$status" -eq 1 ]]
+}
+
+@test "get_pr_details:: outputs PR details when PRs found" {
+	create_test_repo "$TEST_DIR"
+	cd "$TEST_DIR"
+
+	COMMIT=$(git rev-parse HEAD)
+	export COMMIT
+
+	git remote add origin "https://github.com/owner/repo.git" 2>/dev/null || git remote set-url origin "https://github.com/owner/repo.git"
+
+	gh() {
+		if [[ "$1" == "api" ]]; then
+			echo '[{"number": 123}]'
+		elif [[ "$1" == "pr" && "$2" == "view" ]]; then
+			printf '%s\n' '{"number":123,"title":"Test PR","url":"https://github.com/owner/repo/pull/123","state":"MERGED","mergedAt":"2025-01-20T10:00:00Z","createdAt":"2025-01-19T10:00:00Z","body":"Test PR body"}'
+		fi
+		return 0
+	}
+
+	jq() {
+		if [[ "$1" == "-r" && "$2" == ".[].number" ]]; then
+			echo "123"
+		fi
+		return 0
+	}
+
+	run get_pr_details
+	[[ "$status" -eq 0 ]]
+	echo "$output" | grep -q '"number":123'
+	echo "$output" | grep -q '"title":"Test PR"'
+	echo "$output" | grep -q '"state":"MERGED"'
+}
+
+@test "github_main:: shows help correctly" {
+	run github_main --help
 	[[ "$status" -eq 0 ]]
 	echo "$output" | grep -q "Usage:"
 }
 
-@test "main:: fails with missing commit hash" {
+@test "github_main:: fails with missing commit hash" {
 	create_test_repo "$TEST_DIR"
 	cd "$TEST_DIR"
 
-	run main
+	run github_main
 	[[ "$status" -eq 1 ]]
 	echo "$output" | grep -q "Missing required argument"
 }
 
-@test "main:: fails when not in git repository" {
-	cd "$TEST_DIR"
-	rm -rf .git 2>/dev/null || true
+@test "github_main:: fails when not in git repository" {
+	local no_repo_dir="${TEST_DIR}/no_repo"
+	mkdir -p "$no_repo_dir"
+	cd "$no_repo_dir"
 
-	run main "abc123"
+	run github_main "abc123"
 	[[ "$status" -eq 1 ]]
 	echo "$output" | grep -q "Not in a git repository"
 }
 
-@test "main:: fails with invalid commit hash" {
+@test "github_main:: fails with invalid commit hash" {
 	create_test_repo "$TEST_DIR"
 	cd "$TEST_DIR"
 
-	run main "nonexistent123"
+	run github_main "nonexistent123"
 	[[ "$status" -eq 1 ]]
 	echo "$output" | grep -q "not found in git history"
 }
 
-@test "main:: handles unknown options as second argument" {
+@test "github_main:: handles unknown options as second argument" {
 	create_test_repo "$TEST_DIR"
 	cd "$TEST_DIR"
 
-	local commit_hash
-	commit_hash=$(git rev-parse HEAD)
-
-	run main "$commit_hash" --unknown-option
+	COMMIT=$(git rev-parse HEAD)
+	run github_main "$COMMIT" --unknown-option
 	[[ "$status" -eq 1 ]]
 	echo "$output" | grep -q "Unknown option"
 }
 
-# Integration tests
 @test "integration:: script execution with help flag" {
 	run "$SCRIPT" --help
 	[[ "$status" -eq 0 ]]
