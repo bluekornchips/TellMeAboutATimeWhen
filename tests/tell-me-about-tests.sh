@@ -254,7 +254,7 @@ create_test_repo() {
 		echo "Script failed: $output" >&3
 	fi
 	[[ "$status" -eq 0 ]]
-	echo "$output" | grep -q "Commit directories"
+	echo "$output" | grep -q "Commit:"
 
 	# Verify output directory and commit directory created
 	local repo_name
@@ -262,7 +262,6 @@ create_test_repo() {
 	local base_dir="${OUTPUT_DIR}/${repo_name}"
 	local output_dir="$base_dir/master/author_one"
 	[[ -d "$output_dir" ]]
-	echo "$output" | grep -q "$output_dir/"
 
 	# Find commit directory (hash is unpredictable)
 	shopt -s nullglob
@@ -281,7 +280,7 @@ create_test_repo() {
 	run "$SCRIPT" -p "$TEST_DIR" -b "master" -a "Author One" --range "1 week ago"
 
 	[[ "$status" -eq 0 ]]
-	echo "$output" | grep -q "Commit directories"
+	echo "$output" | grep -q "Commit:"
 }
 
 @test "integration:: handles different branch" {
@@ -290,7 +289,7 @@ create_test_repo() {
 	run "$SCRIPT" -p "$TEST_DIR" -b "test-branch" -a "Test User"
 
 	[[ "$status" -eq 0 ]]
-	echo "$output" | grep -q "Commit directories"
+	echo "$output" | grep -q "Commit:"
 }
 
 @test "integration:: handles author not found" {
@@ -333,7 +332,7 @@ create_test_repo() {
 	run "$SCRIPT" -p "$TEST_DIR" -b "master" -a "Author One" --range "2020-01-01" "2030-12-31"
 
 	[[ "$status" -eq 0 ]]
-	echo "$output" | grep -q "Commit directories"
+	echo "$output" | grep -q "Commit:"
 
 	local repo_name
 	repo_name=$(basename "$TEST_DIR")
@@ -358,7 +357,7 @@ create_test_repo() {
 	run "$SCRIPT" -p "$TEST_DIR" -b "master" -a "Author One" --range "1 week ago"
 
 	[[ "$status" -eq 0 ]]
-	echo "$output" | grep -q "Commit directories"
+	echo "$output" | grep -q "Commit:"
 }
 
 @test "integration:: --range flag filters commits correctly" {
