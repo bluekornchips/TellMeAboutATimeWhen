@@ -29,12 +29,30 @@ setup() {
 	# Set default TICKET_ID for tests that need it
 	TICKET_ID="PROJ-123"
 	export TICKET_ID
+	export REPO_PATH
+	export COMMIT
 
 	return 0
 }
 
 teardown() {
 	rm -rf "$TEST_DIR"
+	return 0
+}
+
+# Helper function to create a test repo using worktree
+create_test_repo_worktree() {
+	local repo_dir="$1"
+	local bare_repo
+	bare_repo="${TEST_DIR}/bare_$(basename "$repo_dir").git"
+
+	git init --bare "${bare_repo}" >/dev/null 2>&1
+	git -C "${bare_repo}" worktree add "${repo_dir}" >/dev/null 2>&1
+
+	cd "${repo_dir}" || return 1
+	git config user.name "Test User"
+	git config user.email "test@example.com"
+
 	return 0
 }
 
@@ -126,6 +144,65 @@ mock_acli_success
 	[[ "$status" -eq 0 ]]
 }
 
+# git_cmd
+@test "git_cmd:: uses current directory when REPO_PATH is not set" {
+	local test_repo="${TEST_DIR}/test_repo"
+	create_test_repo_worktree "$test_repo"
+
+	REPO_PATH=""
+	run git_cmd rev-parse --git-dir
+	[[ "$status" -eq 0 ]]
+}
+
+@test "git_cmd:: uses REPO_PATH when set" {
+	local test_repo1="${TEST_DIR}/repo1"
+	local test_repo2="${TEST_DIR}/repo2"
+	create_test_repo_worktree "$test_repo1"
+	create_test_repo_worktree "$test_repo2"
+
+	REPO_PATH="$test_repo2"
+	run git_cmd rev-parse --git-dir
+	[[ "$status" -eq 0 ]]
+	local repo2_git_dir
+	repo2_git_dir=$(git -C "$test_repo2" rev-parse --git-dir)
+	[[ "$output" == "$repo2_git_dir" ]]
+}
+
+# resolve_remote_owner_repo
+@test "resolve_remote_owner_repo:: extracts owner and name from HTTPS URL" {
+	local test_repo="${TEST_DIR}/test_repo"
+	create_test_repo_worktree "$test_repo"
+	git remote add origin "https://github.com/owner/repo.git" 2>/dev/null || git remote set-url origin "https://github.com/owner/repo.git"
+
+	run resolve_remote_owner_repo
+	[[ "$status" -eq 0 ]]
+	local owner
+	local name
+	owner=$(echo "$output" | head -n 1)
+	name=$(echo "$output" | tail -n 1)
+	[[ "$owner" == "owner" ]]
+	[[ "$name" == "repo" ]]
+}
+
+@test "resolve_remote_owner_repo:: uses REPO_PATH when set" {
+	local test_repo1="${TEST_DIR}/repo1"
+	local test_repo2="${TEST_DIR}/repo2"
+	create_test_repo_worktree "$test_repo1"
+	git remote add origin "https://github.com/owner1/repo1.git" 2>/dev/null || git remote set-url origin "https://github.com/owner1/repo1.git"
+	create_test_repo_worktree "$test_repo2"
+	git remote add origin "https://github.com/owner2/repo2.git" 2>/dev/null || git remote set-url origin "https://github.com/owner2/repo2.git"
+
+	REPO_PATH="$test_repo2"
+	run resolve_remote_owner_repo
+	[[ "$status" -eq 0 ]]
+	local owner
+	local name
+	owner=$(echo "$output" | head -n 1)
+	name=$(echo "$output" | tail -n 1)
+	[[ "$owner" == "owner2" ]]
+	[[ "$name" == "repo2" ]]
+}
+
 # extract_jira_tickets
 @test "extract_jira_tickets:: fails when commit is not set" {
 	COMMIT=""
@@ -136,17 +213,13 @@ mock_acli_success
 
 @test "extract_jira_tickets:: returns empty when no tickets found" {
 	local test_repo="${TEST_DIR}/test_repo"
-	mkdir -p "$test_repo"
-	cd "$test_repo" || return 1
-
-	git init >/dev/null 2>&1
-	git config user.name "Test User"
-	git config user.email "test@example.com"
+	create_test_repo_worktree "$test_repo"
 	echo "test" >file.txt
 	git add file.txt
 	git commit -m "No ticket here" >/dev/null 2>&1
 
 	COMMIT=$(git rev-parse HEAD)
+	REPO_PATH=""
 
 	run extract_jira_tickets
 	[[ "$status" -eq 0 ]]
@@ -155,17 +228,13 @@ mock_acli_success
 
 @test "extract_jira_tickets:: extracts single ticket ID" {
 	local test_repo="${TEST_DIR}/test_repo"
-	mkdir -p "$test_repo"
-	cd "$test_repo" || return 1
-
-	git init >/dev/null 2>&1
-	git config user.name "Test User"
-	git config user.email "test@example.com"
+	create_test_repo_worktree "$test_repo"
 	echo "test" >file.txt
 	git add file.txt
 	git commit -m "PROJ-123: Fix bug" >/dev/null 2>&1
 
 	COMMIT=$(git rev-parse HEAD)
+	REPO_PATH=""
 
 	run extract_jira_tickets
 	[[ "$status" -eq 0 ]]
@@ -174,17 +243,13 @@ mock_acli_success
 
 @test "extract_jira_tickets:: extracts multiple unique ticket IDs" {
 	local test_repo="${TEST_DIR}/test_repo"
-	mkdir -p "$test_repo"
-	cd "$test_repo" || return 1
-
-	git init >/dev/null 2>&1
-	git config user.name "Test User"
-	git config user.email "test@example.com"
+	create_test_repo_worktree "$test_repo"
 	echo "test" >file.txt
 	git add file.txt
 	git commit -m "PROJ-123: Fix bug. Also see PROJ-456 and PROJ-123 again" >/dev/null 2>&1
 
 	COMMIT=$(git rev-parse HEAD)
+	REPO_PATH=""
 
 	run extract_jira_tickets
 	[[ "$status" -eq 0 ]]
@@ -193,6 +258,27 @@ mock_acli_success
 	local ticket_count
 	ticket_count=$(echo "$output" | wc -l)
 	[[ $ticket_count -eq 2 ]]
+}
+
+@test "extract_jira_tickets:: uses REPO_PATH when set" {
+	local test_repo1="${TEST_DIR}/repo1"
+	local test_repo2="${TEST_DIR}/repo2"
+	create_test_repo_worktree "$test_repo1"
+	echo "test" >file.txt
+	git add file.txt
+	git commit -m "PROJ-111: First repo" >/dev/null 2>&1
+	create_test_repo_worktree "$test_repo2"
+	echo "test" >file.txt
+	git add file.txt
+	git commit -m "PROJ-222: Second repo" >/dev/null 2>&1
+
+	COMMIT=$(git -C "$test_repo2" rev-parse HEAD)
+	REPO_PATH="$test_repo2"
+
+	run extract_jira_tickets
+	[[ "$status" -eq 0 ]]
+	echo "$output" | grep -q "PROJ-222"
+	echo "$output" | grep -v -q "PROJ-111"
 }
 
 # get_ticket_details_for_id
@@ -230,12 +316,7 @@ mock_acli_success
 
 @test "write_jira_details:: fails when output_path is not set" {
 	local test_repo="${TEST_DIR}/test_repo"
-	mkdir -p "$test_repo"
-	cd "$test_repo" || return 1
-
-	git init >/dev/null 2>&1
-	git config user.name "Test User"
-	git config user.email "test@example.com"
+	create_test_repo_worktree "$test_repo"
 	echo "test" >file.txt
 	git add file.txt
 	git commit -m "PROJ-123: Test" >/dev/null 2>&1
@@ -249,12 +330,7 @@ mock_acli_success
 
 @test "write_jira_details:: fails when output_path does not exist" {
 	local test_repo="${TEST_DIR}/test_repo"
-	mkdir -p "$test_repo"
-	cd "$test_repo" || return 1
-
-	git init >/dev/null 2>&1
-	git config user.name "Test User"
-	git config user.email "test@example.com"
+	create_test_repo_worktree "$test_repo"
 	echo "test" >file.txt
 	git add file.txt
 	git commit -m "PROJ-123: Test" >/dev/null 2>&1
@@ -269,17 +345,13 @@ mock_acli_success
 
 @test "write_jira_details:: writes ticket details to file" {
 	local test_repo="${TEST_DIR}/test_repo"
-	mkdir -p "$test_repo"
-	cd "$test_repo" || return 1
-
-	git init >/dev/null 2>&1
-	git config user.name "Test User"
-	git config user.email "test@example.com"
+	create_test_repo_worktree "$test_repo"
 	echo "test" >file.txt
 	git add file.txt
 	git commit -m "PROJ-123: Test ticket" >/dev/null 2>&1
 
 	COMMIT=$(git rev-parse HEAD)
+	REPO_PATH=""
 	local output_path="${TEST_DIR}/output"
 	mkdir -p "$output_path"
 
@@ -289,14 +361,33 @@ mock_acli_success
 	grep -q "Ticket: PROJ-123" "${output_path}/PROJ-123.txt"
 }
 
+@test "write_jira_details:: uses REPO_PATH when set" {
+	local test_repo1="${TEST_DIR}/repo1"
+	local test_repo2="${TEST_DIR}/repo2"
+	create_test_repo_worktree "$test_repo1"
+	echo "test" >file.txt
+	git add file.txt
+	git commit -m "PROJ-111: First repo" >/dev/null 2>&1
+	create_test_repo_worktree "$test_repo2"
+	echo "test" >file.txt
+	git add file.txt
+	git commit -m "PROJ-222: Second repo" >/dev/null 2>&1
+
+	COMMIT=$(git -C "$test_repo2" rev-parse HEAD)
+	REPO_PATH="$test_repo2"
+	local output_path="${TEST_DIR}/output"
+	mkdir -p "$output_path"
+
+	run write_jira_details "$output_path"
+	[[ "$status" -eq 0 ]]
+	[[ -f "${output_path}/PROJ-222.txt" ]]
+	grep -q "Ticket: PROJ-222" "${output_path}/PROJ-222.txt"
+	[[ ! -f "${output_path}/PROJ-111.txt" ]]
+}
+
 @test "write_jira_details:: returns success when no tickets found" {
 	local test_repo="${TEST_DIR}/test_repo"
-	mkdir -p "$test_repo"
-	cd "$test_repo" || return 1
-
-	git init >/dev/null 2>&1
-	git config user.name "Test User"
-	git config user.email "test@example.com"
+	create_test_repo_worktree "$test_repo"
 	echo "test" >file.txt
 	git add file.txt
 	git commit -m "No ticket here" >/dev/null 2>&1
@@ -308,6 +399,49 @@ mock_acli_success
 	run write_jira_details "$output_path"
 	[[ "$status" -eq 0 ]]
 	[[ ! -f "${output_path}/PROJ-123.txt" ]]
+}
+
+# validate_git_repo
+@test "validate_git_repo:: fails when not in git repository" {
+	local no_repo_dir="${TEST_DIR}/no_repo"
+	mkdir -p "$no_repo_dir"
+	cd "$no_repo_dir"
+
+	REPO_PATH=""
+	run validate_git_repo
+	[[ "$status" -eq 1 ]]
+	echo "$output" | grep -q "Not a git repository"
+}
+
+@test "validate_git_repo:: succeeds when in git repository" {
+	local test_repo="${TEST_DIR}/test_repo"
+	create_test_repo_worktree "$test_repo"
+
+	REPO_PATH=""
+	run validate_git_repo
+	[[ "$status" -eq 0 ]]
+}
+
+@test "validate_git_repo:: uses REPO_PATH when set" {
+	local test_repo1="${TEST_DIR}/repo1"
+	local test_repo2="${TEST_DIR}/repo2"
+	create_test_repo_worktree "$test_repo1"
+	create_test_repo_worktree "$test_repo2"
+
+	REPO_PATH="$test_repo2"
+	run validate_git_repo
+	[[ "$status" -eq 0 ]]
+}
+
+@test "validate_git_repo:: fails when REPO_PATH is not a git repository" {
+	local no_repo_dir="${TEST_DIR}/no_repo"
+	mkdir -p "$no_repo_dir"
+	cd "$TEST_DIR"
+
+	REPO_PATH="$no_repo_dir"
+	run validate_git_repo
+	[[ "$status" -eq 1 ]]
+	echo "$output" | grep -q "Not a git repository: ${no_repo_dir}"
 }
 
 # validate_required_args

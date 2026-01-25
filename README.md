@@ -36,25 +36,25 @@ Required Arguments:
 
 - `-p <path>`: Path to the git repository
 - `-b <branch>`: Branch to analyze
-- `-a <author>`: Author of the commits
 
 Optional Arguments:
 
-- `--range <date>`: Analyze commits since date, or between two dates when two arguments provided
+- `-a <author>`, `--author <author>`: Author of the commits (defaults to git global user.name or user.email if not specified)
+- `--range <date>`: Analyze commits since date (YYYY-MM-DD format), or between two dates when two arguments provided
 - `--sha <commit>`: Analyze specific commit by SHA, can be used multiple times, replaces `--range`
-- `--include-merges`: Include merge commits with subjects matching the author
+- `--only-merges`: Only include merge commits with subjects matching the author
 - `--github`: Include GitHub pull request details for commits
 - `--jira`: Include JIRA ticket details for commits that reference tickets
 - `-h, --help`: Show help message
 
-If no range or SHA is specified, defaults to commits from the past week.
+Note: Either `--range` or `--sha` must be specified. The script does not default to a time range.
 
 ## Examples
 
-Analyze commits by author for the past week:
+Analyze commits by author since a specific date:
 
 ```bash
-./tell-me-about.sh -p /path/to/repo -b main -a "Author Name" --range "1 week ago"
+./tell-me-about.sh -p /path/to/repo -b main -a "Author Name" --range "2025-01-01"
 ```
 
 Analyze commits between two specific dates:
@@ -75,10 +75,10 @@ Analyze commits with GitHub and JIRA details:
 ./tell-me-about.sh -p /path/to/repo -b main -a "Author Name" --github --jira
 ```
 
-Include merge commits in analysis:
+Only include merge commits in analysis:
 
 ```bash
-./tell-me-about.sh -p /path/to/repo -b main -a "Author Name" --include-merges
+./tell-me-about.sh -p /path/to/repo -b main -a "Author Name" --only-merges
 ```
 
 ## Output Structure

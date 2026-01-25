@@ -28,6 +28,7 @@ setup() {
 	export TEST_DIR
 	export COMMIT
 	export PR_FILE
+	export REPO_PATH
 
 	return 0
 }
@@ -39,10 +40,24 @@ teardown() {
 
 create_test_repo() {
 	local repo_dir="$1"
+	local bare_repo
+	local worktree_path
+	local bare_base
 
-	cd "$repo_dir" || return 1
+	worktree_path="${repo_dir}"
+	bare_base=$(dirname "${repo_dir}")
+	bare_repo="${bare_base}/bare_$(basename "$repo_dir").git"
 
-	git init >/dev/null 2>&1
+	if [[ -d "${worktree_path}" ]]; then
+		rm -rf "${worktree_path}"
+	fi
+
+	git init --bare "${bare_repo}" >/dev/null 2>&1
+
+	git -C "${bare_repo}" worktree add "${worktree_path}" >/dev/null 2>&1
+
+	cd "${worktree_path}" || return 1
+
 	git config user.name "Test User"
 	git config user.email "test@example.com"
 
@@ -121,27 +136,106 @@ create_test_repo() {
 	unset -f gh jq
 }
 
-# initialize_prs_file
-@test "initialize_prs_file:: fails when prs_file is not set" {
-	run initialize_prs_file ""
+@test "check_github_dependencies:: does not auto-login when not CLI entry" {
+	gh() {
+		if [[ "$1" == "auth" && "$2" == "status" ]]; then
+			return 1
+		fi
+		return 0
+	}
+
+	jq() {
+		return 0
+	}
+
+	run check_github_dependencies "false"
 	[[ "$status" -eq 1 ]]
-	echo "$output" | grep -q "prs_file is not set"
+	echo "$output" | grep -q "GitHub CLI is not authenticated"
+
+	unset -f gh jq
 }
 
-@test "initialize_prs_file:: creates PRS file successfully" {
-	local prs_file="${TEST_DIR}/test_prs.md"
+# git_cmd
+@test "git_cmd:: uses current directory when REPO_PATH is not set" {
+	create_test_repo "${TEST_DIR}/repo1"
+	cd "${TEST_DIR}/repo1"
 
-	run initialize_prs_file "$prs_file"
+	REPO_PATH=""
+	run git_cmd rev-parse --git-dir
 	[[ "$status" -eq 0 ]]
-	[[ -f "$prs_file" ]]
 }
 
-@test "initialize_prs_file:: fails when file cannot be created" {
-	local prs_file="/nonexistent/dir/test_prs.md"
+@test "git_cmd:: uses REPO_PATH when set" {
+	create_test_repo "${TEST_DIR}/repo1"
+	create_test_repo "${TEST_DIR}/repo2"
+	cd "${TEST_DIR}/repo1"
 
-	run initialize_prs_file "$prs_file"
+	REPO_PATH="${TEST_DIR}/repo2"
+	run git_cmd rev-parse --git-dir
+	[[ "$status" -eq 0 ]]
+	local repo2_git_dir
+	repo2_git_dir=$(git -C "${TEST_DIR}/repo2" rev-parse --git-dir)
+	[[ "$output" == "$repo2_git_dir" ]]
+}
+
+# resolve_remote_owner_repo
+@test "resolve_remote_owner_repo:: extracts owner and name from HTTPS URL" {
+	create_test_repo "${TEST_DIR}/repo1"
+	cd "${TEST_DIR}/repo1"
+	git remote add origin "https://github.com/owner/repo.git" 2>/dev/null || git remote set-url origin "https://github.com/owner/repo.git"
+
+	run resolve_remote_owner_repo
+	[[ "$status" -eq 0 ]]
+	local owner
+	local name
+	owner=$(echo "$output" | head -n 1)
+	name=$(echo "$output" | tail -n 1)
+	[[ "$owner" == "owner" ]]
+	[[ "$name" == "repo" ]]
+}
+
+@test "resolve_remote_owner_repo:: extracts owner and name from SSH URL" {
+	create_test_repo "${TEST_DIR}/repo1"
+	cd "${TEST_DIR}/repo1"
+	git remote add origin "git@github.com:owner/repo.git" 2>/dev/null || git remote set-url origin "git@github.com:owner/repo.git"
+
+	run resolve_remote_owner_repo
+	[[ "$status" -eq 0 ]]
+	local owner
+	local name
+	owner=$(echo "$output" | head -n 1)
+	name=$(echo "$output" | tail -n 1)
+	[[ "$owner" == "owner" ]]
+	[[ "$name" == "repo" ]]
+}
+
+@test "resolve_remote_owner_repo:: uses REPO_PATH when set" {
+	create_test_repo "${TEST_DIR}/repo1"
+	create_test_repo "${TEST_DIR}/repo2"
+	cd "${TEST_DIR}/repo1"
+	git remote add origin "https://github.com/owner1/repo1.git" 2>/dev/null || git remote set-url origin "https://github.com/owner1/repo1.git"
+	cd "${TEST_DIR}/repo2"
+	git remote add origin "https://github.com/owner2/repo2.git" 2>/dev/null || git remote set-url origin "https://github.com/owner2/repo2.git"
+
+	REPO_PATH="${TEST_DIR}/repo2"
+	run resolve_remote_owner_repo
+	[[ "$status" -eq 0 ]]
+	local owner
+	local name
+	owner=$(echo "$output" | head -n 1)
+	name=$(echo "$output" | tail -n 1)
+	[[ "$owner" == "owner2" ]]
+	[[ "$name" == "repo2" ]]
+}
+
+@test "resolve_remote_owner_repo:: fails with unsupported URL format" {
+	create_test_repo "${TEST_DIR}/repo1"
+	cd "${TEST_DIR}/repo1"
+	git remote add origin "unsupported://example.com/repo.git" 2>/dev/null || git remote set-url origin "unsupported://example.com/repo.git"
+
+	run resolve_remote_owner_repo
 	[[ "$status" -eq 1 ]]
-	echo "$output" | grep -q "Failed to create PRS file"
+	echo "$output" | grep -q "Unsupported git remote URL format"
 }
 
 # write_pr_details
@@ -224,6 +318,7 @@ create_test_repo() {
 	mkdir -p "$no_repo_dir"
 	cd "$no_repo_dir"
 
+	REPO_PATH=""
 	run validate_git_repo
 	[[ "$status" -eq 1 ]]
 	echo "$output" | grep -q "Not in a git repository"
@@ -233,8 +328,30 @@ create_test_repo() {
 	create_test_repo "$TEST_DIR"
 	cd "$TEST_DIR"
 
+	REPO_PATH=""
 	run validate_git_repo
 	[[ "$status" -eq 0 ]]
+}
+
+@test "validate_git_repo:: uses REPO_PATH when set" {
+	create_test_repo "${TEST_DIR}/repo1"
+	create_test_repo "${TEST_DIR}/repo2"
+	cd "${TEST_DIR}/repo1"
+
+	REPO_PATH="${TEST_DIR}/repo2"
+	run validate_git_repo
+	[[ "$status" -eq 0 ]]
+}
+
+@test "validate_git_repo:: fails when REPO_PATH is not a git repository" {
+	local no_repo_dir="${TEST_DIR}/no_repo"
+	mkdir -p "$no_repo_dir"
+	cd "$TEST_DIR"
+
+	REPO_PATH="$no_repo_dir"
+	run validate_git_repo
+	[[ "$status" -eq 1 ]]
+	echo "$output" | grep -q "Not a git repository: ${no_repo_dir}"
 }
 
 # validate_commit_exists
@@ -284,12 +401,47 @@ create_test_repo() {
 	cd "$TEST_DIR"
 
 	COMMIT=$(git rev-parse HEAD)
+	REPO_PATH=""
 
 	git remote remove origin 2>/dev/null || true
 
 	run get_pr_details
 	[[ "$status" -eq 1 ]]
-	echo "$output" | grep -q "Failed to get git remote URL"
+	echo "$output" | grep -qE "resolve_remote_owner_repo:: Failed to get git remote URL"
+}
+
+@test "get_pr_details:: uses REPO_PATH when set" {
+	create_test_repo "${TEST_DIR}/repo1"
+	create_test_repo "${TEST_DIR}/repo2"
+	cd "${TEST_DIR}/repo1"
+	git remote add origin "https://github.com/owner1/repo1.git" 2>/dev/null || git remote set-url origin "https://github.com/owner1/repo1.git"
+	cd "${TEST_DIR}/repo2"
+	git remote add origin "https://github.com/owner2/repo2.git" 2>/dev/null || git remote set-url origin "https://github.com/owner2/repo2.git"
+
+	COMMIT=$(git -C "${TEST_DIR}/repo2" rev-parse HEAD)
+	REPO_PATH="${TEST_DIR}/repo2"
+
+	gh() {
+		if [[ "$1" == "api" ]]; then
+			echo '[{"number": 123}]'
+		elif [[ "$1" == "pr" && "$2" == "view" ]]; then
+			printf '%s\n' '{"number":123,"title":"Test PR"}'
+		fi
+		return 0
+	}
+
+	jq() {
+		if [[ "$1" == "-r" && "$2" == ".[].number" ]]; then
+			echo "123"
+		fi
+		return 0
+	}
+
+	run get_pr_details
+	[[ "$status" -eq 0 ]]
+	echo "$output" | grep -q '"number":123'
+
+	unset -f gh jq
 }
 
 @test "get_pr_details:: fails with unsupported remote URL format" {
@@ -297,12 +449,13 @@ create_test_repo() {
 	cd "$TEST_DIR"
 
 	COMMIT=$(git rev-parse HEAD)
+	REPO_PATH=""
 
 	git remote add origin "unsupported://example.com/repo.git" 2>/dev/null || git remote set-url origin "unsupported://example.com/repo.git"
 
 	run get_pr_details
 	[[ "$status" -eq 1 ]]
-	echo "$output" | grep -q "Unsupported git remote URL format"
+	echo "$output" | grep -qE "resolve_remote_owner_repo:: Unsupported git remote URL format"
 }
 
 @test "get_pr_details:: returns empty when no PRs found" {

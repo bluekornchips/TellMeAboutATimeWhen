@@ -47,12 +47,19 @@ teardown() {
 }
 
 # Creates a test git repository with multiple commits and authors for testing
+# Uses worktrees
 create_test_repo() {
 	local repo_dir="$1"
+	local bare_repo
+	local worktree_path
 
-	cd "$repo_dir" || return 1
+	bare_repo="${TEST_DIR}/bare_repo.git"
+	worktree_path="${repo_dir}"
 
-	git init >/dev/null 2>&1
+	git init --bare "${bare_repo}" >/dev/null 2>&1
+	git -C "${bare_repo}" worktree add "${worktree_path}" >/dev/null 2>&1
+	cd "${worktree_path}" || return 1
+
 	git config user.name "Test User"
 	git config user.email "test@example.com"
 
@@ -127,11 +134,13 @@ create_test_repo() {
 }
 
 @test "unit:: fails with invalid date format in --range" {
-	# Create a minimal repo for this test
+	local bare_repo="${TEST_DIR}/date_test_bare.git"
 	local test_repo="${TEST_DIR}/date_test_repo"
-	mkdir -p "$test_repo"
-	cd "$test_repo" || return 1
-	git init >/dev/null 2>&1
+
+	git init --bare "${bare_repo}" >/dev/null 2>&1
+	git -C "${bare_repo}" worktree add "${test_repo}" >/dev/null 2>&1
+
+	cd "${test_repo}" || return 1
 	git config user.name "Test User"
 	git config user.email "test@example.com"
 	echo "test" >file.txt

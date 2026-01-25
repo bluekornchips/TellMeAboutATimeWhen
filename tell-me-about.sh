@@ -4,8 +4,19 @@
 # within a time range from a git repository and saves them to a file.
 #
 
-set -eo pipefail
+# Only enable strict mode when executed directly, not when sourced
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+	set -eo pipefail
+	umask 077
+fi
 
+# Display usage information
+#
+# Side Effects:
+# - Outputs usage information to stdout
+#
+# Returns:
+# - 0 always
 usage() {
 	cat <<EOF
 Usage: $(basename "$0") -p|--path <path> -b|--branch <branch> [-a|--author <author>] [--range <date> | --range <start_date> <end_date>] [--sha <commit> ...] [--only-merges] [--github] [--jira]
@@ -41,6 +52,31 @@ OUTPUT_LABEL_WIDTH=8
 GITHUB_SCRIPT="tools/github.sh"
 JIRA_SCRIPT="tools/jira.sh"
 
+# Color definitions
+COLOR_RESET=""
+COLOR_BOLD=""
+COLOR_DIM=""
+COLOR_COMMIT=""
+COLOR_DIFF=""
+COLOR_JIRA=""
+COLOR_GITHUB=""
+COLOR_PATH=""
+COLOR_SEPARATOR=""
+COLOR_LABEL=""
+
+if [[ -t 1 ]]; then
+	COLOR_RESET=$'\033[0m'
+	COLOR_BOLD=$'\033[1m'
+	COLOR_DIM=$'\033[2m'
+	COLOR_COMMIT=$'\033[38;5;39m'
+	COLOR_DIFF=$'\033[38;5;76m'
+	COLOR_JIRA=$'\033[38;5;208m'
+	COLOR_GITHUB=$'\033[38;5;141m'
+	COLOR_PATH=$'\033[38;5;244m'
+	COLOR_SEPARATOR=$'\033[38;5;240m'
+	COLOR_LABEL=$'\033[1;38;5;255m'
+fi
+
 # Validates required script arguments
 #
 # Returns:
@@ -56,7 +92,7 @@ validate_args() {
 		echo "validate_args:: BRANCH is not set" >&2
 		return 1
 	fi
-	
+
 	if [[ -z "${AUTHOR}" ]]; then
 		echo "validate_args:: Missing required arguments" >&2
 		usage
@@ -448,6 +484,38 @@ write_commit_details() {
 	return 0
 }
 
+# Helper function to print a separator line
+#
+# Inputs:
+# - None, uses COLUMNS environment variable if available
+#
+# Outputs:
+# - Writes separator line to stdout
+#
+# Side Effects:
+# - Outputs a separator line to stdout
+#
+# Returns:
+# - 0 always
+print_separator() {
+	local width
+	local i
+	local sep_char="━"
+
+	width="${COLUMNS:-80}"
+	if [[ "${width}" -gt 120 ]]; then
+		width=120
+	fi
+
+	printf "%s" "${COLOR_SEPARATOR}"
+	for ((i = 0; i < width; i++)); do
+		printf "%s" "${sep_char}"
+	done
+	printf "%s\n" "${COLOR_RESET}"
+
+	return 0
+}
+
 # Processes commits and writes details to output directories
 #
 # Side Effects:
@@ -519,7 +587,11 @@ process_commits() {
 		if [[ "${CHECK_JIRA}" == "true" ]]; then
 			jira_file="${commit_dir}/jira.txt"
 			JIRA_FILE="${jira_file}"
-			write_jira_details_to_file >/dev/null 2>&1 || true
+			export JIRA_FILE
+			export COMMIT
+			if ! write_jira_details_to_file 2>&1; then
+				echo "process_commits:: Failed to write JIRA details for ${commit}" >&2
+			fi
 			jira_link="${jira_file}"
 		fi
 
@@ -528,17 +600,24 @@ process_commits() {
 			pr_file="${commit_dir}/pr.json"
 			if [[ ! -f "${pr_file}" ]]; then
 				PR_FILE="${pr_file}"
-				write_pr_details_to_file >/dev/null 2>&1 || true
+				export PR_FILE
+				export COMMIT
+				if ! write_pr_details_to_file 2>&1; then
+					echo "process_commits:: Failed to write PR details for ${commit}" >&2
+				fi
 			fi
 			github_link="${pr_file}"
 		fi
 
-		printf "\n%-${OUTPUT_LABEL_WIDTH}s%s\n" "Commit:" "${short_commit}"
+		printf "\n"
+		print_separator
+		printf "%sCommit:%s %s%s%s%s\n" "${COLOR_LABEL}" "${COLOR_RESET}" "${COLOR_COMMIT}" "${COLOR_BOLD}" "${short_commit}" "${COLOR_RESET}"
+		printf "%sDiff:%s   %s%s%s\n" "${COLOR_LABEL}" "${COLOR_RESET}" "${COLOR_PATH}" "${diff_file}" "${COLOR_RESET}"
 		if [[ -n "${jira_link}" ]]; then
-			printf "%-${OUTPUT_LABEL_WIDTH}s%s\n" "Jira:" "${jira_link}"
+			printf "%sJira:%s   %s%s%s\n" "${COLOR_LABEL}" "${COLOR_RESET}" "${COLOR_JIRA}" "${jira_link}" "${COLOR_RESET}"
 		fi
 		if [[ -n "${github_link}" ]]; then
-			printf "%-${OUTPUT_LABEL_WIDTH}s%s\n" "Github:" "${github_link}"
+			printf "%sGithub:%s %s%s%s\n" "${COLOR_LABEL}" "${COLOR_RESET}" "${COLOR_GITHUB}" "${github_link}" "${COLOR_RESET}"
 		fi
 	done
 
@@ -553,7 +632,7 @@ main() {
 	COMMIT_SHAS=()
 
 	while [[ $# -gt 0 ]]; do
-		case $1 in
+		case "$1" in
 		-h | --help)
 			usage
 			return 0
@@ -658,6 +737,8 @@ main() {
 		echo "main:: Failed to create output directory: ${OUTPUT_PATH}" >&2
 		return 1
 	fi
+
+	export REPO_PATH
 
 	if [[ "${CHECK_GITHUB}" == "true" ]] && [[ -f "${GITHUB_SCRIPT}" ]]; then
 		source "${GITHUB_SCRIPT}"
