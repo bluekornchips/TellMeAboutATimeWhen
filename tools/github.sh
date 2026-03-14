@@ -219,6 +219,7 @@ get_pr_details() {
 	local remote_info
 	local repo_owner
 	local repo_name
+	local repo_slug
 	local pr_list
 	local pr_numbers
 	local pr_number
@@ -234,6 +235,7 @@ get_pr_details() {
 
 	repo_owner=$(echo "${remote_info}" | head -n 1)
 	repo_name=$(echo "${remote_info}" | tail -n 1)
+	repo_slug="${repo_owner}/${repo_name}"
 
 	if ! pr_list=$(gh api "/repos/${repo_owner}/${repo_name}/commits/${full_hash}/pulls" 2>/dev/null); then
 		return 1
@@ -254,7 +256,7 @@ get_pr_details() {
 
 	while IFS= read -r pr_number; do
 		if [[ -n "${pr_number}" ]]; then
-			if ! gh pr view "${pr_number}" --json number,title,url,state,mergedAt,createdAt,body 2>/dev/null; then
+			if ! gh pr view "${pr_number}" --repo "${repo_slug}" --json number,title,url,state,mergedAt,createdAt,body 2>/dev/null; then
 				continue
 			fi
 		fi
@@ -305,31 +307,6 @@ write_pr_details() {
 
 	if ! echo "${pr_data}" | jq -s '.' >"${PR_FILE}" 2>/dev/null; then
 		echo "write_pr_details:: Failed to format PR data as JSON" >&2
-		return 1
-	fi
-
-	return 0
-}
-
-# Writes PR details for a commit to a specific file
-#
-# Inputs:
-# - COMMIT: Commit hash, from environment
-# - PR_FILE: Output file path, from environment
-#
-# Side Effects:
-# - Overwrites PR details to the output file
-#
-# Returns:
-# - 0 on success
-# - 1 on failure
-write_pr_details_to_file() {
-	if [[ -z "${COMMIT}" || -z "${PR_FILE}" ]]; then
-		echo "write_pr_details_to_file:: commit or pr_file is not set" >&2
-		return 1
-	fi
-
-	if ! write_pr_details; then
 		return 1
 	fi
 

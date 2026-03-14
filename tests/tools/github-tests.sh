@@ -26,6 +26,7 @@ setup() {
 
 	TEST_DIR=$(mktemp -d)
 	export TEST_DIR
+	trap 'rm -rf "$TEST_DIR"' EXIT
 	export COMMIT
 	export PR_FILE
 	export REPO_PATH
@@ -34,7 +35,6 @@ setup() {
 }
 
 teardown() {
-	rm -rf "$TEST_DIR"
 	return 0
 }
 

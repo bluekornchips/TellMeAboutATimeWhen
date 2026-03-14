@@ -42,10 +42,6 @@ setup() {
 	return 0
 }
 
-teardown() {
-	return 0
-}
-
 # Creates a test git repository with multiple commits and authors for testing
 # Uses worktrees
 create_test_repo() {
@@ -90,7 +86,6 @@ create_test_repo() {
 	git add test.txt
 	git commit -m "Branch commit" >/dev/null 2>&1
 
-	local default_branch
 	default_branch=$(git symbolic-ref --short HEAD 2>/dev/null || echo "master")
 	git checkout "$default_branch" >/dev/null 2>&1
 
@@ -118,11 +113,28 @@ create_test_repo() {
 @test "unit:: fails with missing required arguments" {
 	run "$SCRIPT"
 	[[ "$status" -ne 0 ]]
-	echo "$output" | grep -q "Missing required arguments"
+	echo "$output" | grep -qE "Missing required arguments|--range or --sha is required"
+}
+
+@test "unit:: fails when neither --range nor --sha is provided" {
+	local bare_repo="${TEST_DIR}/range_sha_bare.git"
+	local test_repo="${TEST_DIR}/range_sha_repo"
+	git init --bare "${bare_repo}" >/dev/null 2>&1
+	git -C "${bare_repo}" worktree add "${test_repo}" >/dev/null 2>&1
+	cd "${test_repo}" || return 1
+	git config user.name "Test User"
+	git config user.email "test@example.com"
+	echo "test" >file.txt
+	git add file.txt
+	git commit -m "Initial commit" >/dev/null 2>&1
+
+	run "$SCRIPT" -p "${test_repo}" -b "master" -a "Test User"
+	[[ "$status" -ne 0 ]]
+	echo "$output" | grep -q "main:: --range or --sha is required"
 }
 
 @test "unit:: fails with invalid repository path" {
-	run "$SCRIPT" -p "/nonexistent/path" -b "master" -a "test@example.com"
+	run "$SCRIPT" -p "/nonexistent/path" -b "master" -a "test@example.com" --range "2025-01-01"
 	[[ "$status" -ne 0 ]]
 	echo "$output" | grep -q "Invalid repository path"
 }
@@ -171,11 +183,10 @@ create_test_repo() {
 	[[ "$result" == "2025-12-31" ]]
 }
 
-@test "parse_date:: handles relative date '1 week ago'" {
-	local result
-	result=$(parse_date "1 week ago")
-	[[ -n "$result" ]]
-	[[ "$result" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]
+@test "parse_date:: fails with relative date '1 week ago'" {
+	run parse_date "1 week ago"
+	[[ "$status" -ne 0 ]]
+	echo "$output" | grep -q "Invalid date format"
 }
 
 @test "parse_date:: fails with invalid date format" {
@@ -216,14 +227,12 @@ create_test_repo() {
 	[[ "$PERIOD_END" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]
 }
 
-@test "determine_period_dates:: sets PERIOD_START and PERIOD_END with no dates" {
+@test "determine_period_dates:: fails with no dates" {
 	RANGE_DATE1=""
 	RANGE_DATE2=""
-	determine_period_dates
-	[[ -n "$PERIOD_START" ]]
-	[[ "$PERIOD_START" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]
-	[[ -n "$PERIOD_END" ]]
-	[[ "$PERIOD_END" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]
+	run determine_period_dates
+	[[ "$status" -ne 0 ]]
+	echo "$output" | grep -q "determine_period_dates:: --range requires at least one date"
 }
 
 @test "determine_period_dates:: fails with invalid first date" {
@@ -257,7 +266,7 @@ create_test_repo() {
 @test "integration:: basic commit analysis works" {
 	create_test_repo "$TEST_DIR"
 
-	run "$SCRIPT" -p "$TEST_DIR" -b "master" -a "Author One"
+	run "$SCRIPT" -p "$TEST_DIR" -b "master" -a "Author One" --range "2020-01-01"
 
 	if [[ "$status" -ne 0 ]]; then
 		echo "Script failed: $output" >&3
@@ -286,7 +295,8 @@ create_test_repo() {
 @test "integration:: handles time range parameter" {
 	create_test_repo "$TEST_DIR"
 
-	run "$SCRIPT" -p "$TEST_DIR" -b "master" -a "Author One" --range "1 week ago"
+	# Single date: from 2020-01-01 to now
+	run "$SCRIPT" -p "$TEST_DIR" -b "master" -a "Author One" --range "2020-01-01"
 
 	[[ "$status" -eq 0 ]]
 	echo "$output" | grep -q "Commit:"
@@ -295,7 +305,7 @@ create_test_repo() {
 @test "integration:: handles different branch" {
 	create_test_repo "$TEST_DIR"
 
-	run "$SCRIPT" -p "$TEST_DIR" -b "test-branch" -a "Test User"
+	run "$SCRIPT" -p "$TEST_DIR" -b "test-branch" -a "Test User" --range "2020-01-01"
 
 	[[ "$status" -eq 0 ]]
 	echo "$output" | grep -q "Commit:"
@@ -304,7 +314,7 @@ create_test_repo() {
 @test "integration:: handles author not found" {
 	create_test_repo "$TEST_DIR"
 
-	run "$SCRIPT" -p "$TEST_DIR" -b "master" -a "NonExistent Author"
+	run "$SCRIPT" -p "$TEST_DIR" -b "master" -a "NonExistent Author" --range "2020-01-01"
 
 	[[ "$status" -ne 0 ]]
 	echo "$output" | grep -q "not found in the commit history"
@@ -313,7 +323,7 @@ create_test_repo() {
 @test "integration:: output includes commit details and diffs" {
 	create_test_repo "$TEST_DIR"
 
-	run "$SCRIPT" -p "$TEST_DIR" -b "master" -a "Author One"
+	run "$SCRIPT" -p "$TEST_DIR" -b "master" -a "Author One" --range "2020-01-01"
 
 	[[ "$status" -eq 0 ]]
 
@@ -362,8 +372,8 @@ create_test_repo() {
 @test "integration:: --range flag works with single date" {
 	create_test_repo "$TEST_DIR"
 
-	# Single date should be treated as --since, from that date to now
-	run "$SCRIPT" -p "$TEST_DIR" -b "master" -a "Author One" --range "1 week ago"
+	# Single date is treated as --since, from that date to now
+	run "$SCRIPT" -p "$TEST_DIR" -b "master" -a "Author One" --range "2020-01-01"
 
 	[[ "$status" -eq 0 ]]
 	echo "$output" | grep -q "Commit:"
@@ -392,7 +402,7 @@ create_test_repo() {
 			git commit --author="Author One <author1@example.com>" -m "Feature commit" >/dev/null 2>&1
 	)
 
-	run "$SCRIPT" -p "$TEST_DIR" -b "feature/my-feature" -a "Author One"
+	run "$SCRIPT" -p "$TEST_DIR" -b "feature/my-feature" -a "Author One" --range "2020-01-01"
 
 	[[ "$status" -eq 0 ]]
 

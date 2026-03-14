@@ -25,6 +25,7 @@ setup() {
 
 	TEST_DIR=$(mktemp -d)
 	export TEST_DIR
+	trap 'rm -rf "$TEST_DIR"' EXIT
 
 	# Set default TICKET_ID for tests that need it
 	TICKET_ID="PROJ-123"
@@ -36,7 +37,6 @@ setup() {
 }
 
 teardown() {
-	rm -rf "$TEST_DIR"
 	return 0
 }
 
@@ -257,7 +257,7 @@ mock_acli_success
 	echo "$output" | grep -q "PROJ-456"
 	local ticket_count
 	ticket_count=$(echo "$output" | wc -l)
-	[[ $ticket_count -eq 2 ]]
+	[[ "${ticket_count}" -eq 2 ]]
 }
 
 @test "extract_jira_tickets:: uses REPO_PATH when set" {

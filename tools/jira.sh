@@ -520,19 +520,21 @@ write_jira_details_to_file() {
 		return 1
 	fi
 
+	if [[ -z "${ticket_ids}" ]]; then
+		return 0
+	fi
+
 	if ! : >"${JIRA_FILE}"; then
 		echo "write_jira_details_to_file:: Failed to write to jira_file: ${JIRA_FILE}" >&2
 		return 1
 	fi
 
-	if [[ -z "${ticket_ids}" ]]; then
-		return 0
-	fi
-
 	while IFS= read -r ticket_id; do
 		if [[ -n "${ticket_id}" ]]; then
-			if get_ticket_details_for_id "${ticket_id}" >>"${JIRA_FILE}" 2>/dev/null; then
+			if get_ticket_details_for_id "${ticket_id}" >>"${JIRA_FILE}"; then
 				printf '\n' >>"${JIRA_FILE}"
+			else
+				echo "write_jira_details_to_file:: Failed to fetch ticket: ${ticket_id}" >&2
 			fi
 		fi
 	done <<<"${ticket_ids}"

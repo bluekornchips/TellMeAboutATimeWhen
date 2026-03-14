@@ -1,12 +1,12 @@
-test:
-	clear && bats --verbose-run --timing \
-	tests/tell-me-about-tests.sh \
-	tests/tools/github-tests.sh \
-	tests/tools/jira-tests.sh;
+# Bats
+TEST_FILES := $(shell find tests -name '*-tests.sh' -type f)
+BATS_COMMAND := bats --timing --verbose-run
+
+test: $(TEST_FILES)
+	clear && $(BATS_COMMAND) $(TEST_FILES)
 
 lint:
-	find . -name "*.sh" -type f | xargs shellcheck
+	find . -name "*.sh" -type f -exec shellcheck {} +
 
 install:
-	find . -type f -executable -exec chmod 744 {} \;
-	@echo "Scripts are now executable"
+	find . -name "*.sh" -type f -exec chmod 744 {} \;

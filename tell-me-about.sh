@@ -39,6 +39,8 @@ Options:
   --jira                   : Include JIRA ticket details for commits that reference tickets (requires JIRA CLI)
   -h, --help               : Show this help message
 
+Either --range or --sha must be specified.
+
 EOF
 }
 
@@ -311,12 +313,12 @@ sanitize_names() {
 
 	if ! sanitized_author=$(echo "${author}" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/_/g'); then
 		echo "sanitize_names:: Failed to sanitize author name" >&2
-		sanitized_author=$(echo "${author}" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/_/g' || echo "unknown_author")
+		sanitized_author="unknown_author"
 	fi
 
 	if ! sanitized_branch=$(tr -c 'a-zA-Z0-9_-' '_' <<<"${branch}" | sed 's/_$//'); then
 		echo "sanitize_names:: Failed to sanitize branch name" >&2
-		sanitized_branch=$(tr -c 'a-zA-Z0-9_-' '_' <<<"${branch}" | sed 's/_$//' || echo "unknown_branch")
+		sanitized_branch="unknown_branch"
 	fi
 
 	echo "${sanitized_author}"
@@ -520,7 +522,6 @@ print_separator() {
 #
 # Side Effects:
 # - Creates commit-specific directories and files
-# - Sets COMMIT_DIRS global array
 # - Outputs commit information to stdout
 #
 # Returns:
@@ -538,6 +539,7 @@ process_commits() {
 	local jira_file
 	local github_link
 	local pr_file
+	local pr_file_contents
 
 	if [[ -z "${REPO_PATH}" || -z "${OUTPUT_PATH}" ]]; then
 		echo "process_commits:: REPO_PATH or OUTPUT_PATH is not set" >&2
@@ -545,7 +547,6 @@ process_commits() {
 	fi
 
 	commit_count=0
-	COMMIT_DIRS=()
 	commit_array=()
 	while read -r commit; do
 		if [[ -n "${commit}" ]]; then
@@ -574,7 +575,6 @@ process_commits() {
 			echo "process_commits:: Failed to create commit directory: ${commit_dir}" >&2
 			continue
 		fi
-		COMMIT_DIRS+=("${commit_dir}")
 
 		diff_file="${commit_dir}/diff.txt"
 		if [[ ! -f "${diff_file}" ]]; then
@@ -589,20 +589,32 @@ process_commits() {
 			JIRA_FILE="${jira_file}"
 			export JIRA_FILE
 			export COMMIT
-			if ! write_jira_details_to_file 2>&1; then
-				echo "process_commits:: Failed to write JIRA details for ${commit}" >&2
+
+			if [[ ! -s "${jira_file}" ]]; then
+				if ! write_jira_details_to_file; then
+					echo "process_commits:: Failed to write JIRA details for ${commit}" >&2
+				fi
 			fi
-			jira_link="${jira_file}"
+
+			if [[ -s "${jira_file}" ]]; then
+				jira_link="${jira_file}"
+			fi
 		fi
 
 		github_link=""
 		if [[ "${CHECK_GITHUB}" == "true" ]]; then
 			pr_file="${commit_dir}/pr.json"
-			if [[ ! -f "${pr_file}" ]]; then
+			pr_file_contents=""
+			if [[ -f "${pr_file}" ]]; then
+				if ! pr_file_contents=$(<"${pr_file}"); then
+					pr_file_contents=""
+				fi
+			fi
+			if [[ ! -f "${pr_file}" ]] || [[ "${pr_file_contents}" == "[]" ]]; then
 				PR_FILE="${pr_file}"
 				export PR_FILE
 				export COMMIT
-				if ! write_pr_details_to_file 2>&1; then
+				if ! write_pr_details 2>&1; then
 					echo "process_commits:: Failed to write PR details for ${commit}" >&2
 				fi
 			fi
@@ -628,8 +640,18 @@ main() {
 	local sanitized_names_output
 	local sanitized_author
 	local sanitized_branch
+	local script_dir
 
 	COMMIT_SHAS=()
+
+	script_dir=""
+	if [[ -n "${BASH_SOURCE[0]:-}" ]]; then
+		script_dir=$(set_context)
+	fi
+	if [[ -n "${script_dir}" ]]; then
+		GITHUB_SCRIPT="${script_dir}/tools/github.sh"
+		JIRA_SCRIPT="${script_dir}/tools/jira.sh"
+	fi
 
 	while [[ $# -gt 0 ]]; do
 		case "$1" in
@@ -699,6 +721,12 @@ main() {
 
 	if [[ -z "${OUTPUT_DIR}" ]]; then
 		OUTPUT_DIR="${HOME}/${DEFAULT_OUTPUT_DIR}"
+	fi
+
+	if [[ ${#COMMIT_SHAS[@]} -eq 0 && -z "${RANGE_DATE1}" ]]; then
+		echo "main:: --range or --sha is required" >&2
+		usage
+		return 1
 	fi
 
 	if ! set_default_author; then
