@@ -1,22 +1,56 @@
 # TellMeAboutATimeWhen
 
-Git commit analyzer that extracts commit details, GitHub pull requests, and JIRA ticket information for a specific author within a repository.
+Git commit analyzer that writes commit details, GitHub pull requests, and JIRA tickets for an author, then prepares a Coworker meeting window for Cursor project skills.
 
 ## Overview
 
-This tool analyzes git commits and saves detailed information to commit-specific directories. Each commit gets its own directory containing:
+`tell-me-about.sh` analyzes commits and writes one directory per commit. GitHub, JIRA, and Coworker are enabled by default. Pass `--tools` with a comma-separated subset to narrow that set.
 
-- `diff.txt`: Commit message and changed files
-- `pr.json`: Pull request details from GitHub
-- `jira.txt`: JIRA ticket details extracted from commit messages
+Each commit directory can contain:
+
+- `diff.txt`: Commit message, patch, and changed files
+- `pr.json`: Pull request details when `github` is enabled
+- `jira.txt`: Ticket details extracted from the commit message when `jira` is enabled
+
+The `coworker` tool does not download meetings from bash. It verifies Coworker MCP in `~/.cursor/mcp.json`, creates `meetings/`, and prints the date window plus project skill paths. The parent skill then calls Coworker `calendar_search` and `transcript_by_id` and writes:
+
+- `meetings/YYYY-MM-DD_slug/details.txt`: Title, time, attendees, URL, summary, decisions, action items
+- `meetings/YYYY-MM-DD_slug/transcript.txt`: Transcript when Coworker returned one
+
+## Layout
+
+```text
+tell-me-about.sh          Orchestrator CLI, argv and pipeline
+tools/
+  github.sh               Sourced GitHub helpers, not run directly
+  jira.sh                 Sourced JIRA helpers, not run directly
+  coworker.sh             Sourced Coworker MCP helpers, not run directly
+  lib/
+    git.sh                Shared git helpers
+    util.sh               Shared micro-helpers
+    commits.sh            Commit selection and period helpers
+    print.sh              Summary card helpers only
+.cursor/skills/
+  tell-me-about-a-time-when/   Parent evidence skill
+  weekly-update/               Child report skill
+  one-one-one/                 Child report skill
+  brag-book/                   Child report skill
+tests/
+  helpers/
+    repo.sh               Shared git fixtures
+    bats-setup.sh         Shared Bats bootstrap
+  tell-me-about-tests.sh  Orchestrator suite
+  tools/                  Mirrored tool and lib suites
+```
 
 ## Requirements
 
-- Bash 4.0 or higher
+- Bash 3.2 or higher
 - Git
-- GitHub CLI (`gh`) for `--github` option
-- jq for `--github` option
-- Atlassian CLI (`acli`) for `--jira` option
+- GitHub CLI (`gh`) when `github` is enabled
+- jq when `github` or `coworker` is enabled
+- Atlassian CLI (`acli`) when `jira` is enabled
+- Coworker MCP in `~/.cursor/mcp.json` when `coworker` is enabled
 
 ## Install
 
@@ -29,151 +63,143 @@ make install
 ## Usage
 
 ```bash
-./tell-me-about.sh -p <path> -b <branch> -a <author> [options]
+./tell-me-about.sh -p <path> -b <branch> [-a <author>] (--range <date> [<end>] | --sha <commit>...) [options]
 ```
 
-Required Arguments:
+Required:
 
-- `-p <path>`: Path to the git repository
-- `-b <branch>`: Branch to analyze
+- `-p, --path <path>`: Path to the git repository
+- `-b, --branch <branch>`: Branch to analyze
+- `--range` or `--sha`: At least one is required; they cannot be combined
 
-Optional Arguments:
+Optional:
 
-- `-a <author>`, `--author <author>`: Author of the commits (defaults to git global user.name or user.email if not specified)
-- `--range <date>`: Analyze commits since date (YYYY-MM-DD format), or between two dates when two arguments provided
-- `--sha <commit>`: Analyze specific commit by SHA, can be used multiple times, replaces `--range`
-- `--only-merges`: Only include merge commits with subjects matching the author
-- `--github`: Include GitHub pull request details for commits
-- `--jira`: Include JIRA ticket details for commits that reference tickets
-- `-h, --help`: Show help message
+- `-a, --author <author>`: Commit author; defaults to git global `user.name` or `user.email`
+- `--range <date>`: Commits since `YYYY-MM-DD`, or between two dates when a second date is given
+- `--sha <commit>`: Specific commit SHA; repeatable; replaces `--range`
+- `--only-merges`: Only merge commits whose subject matches the author
+- `--tools <tools>`: Comma-separated subset of `jira`, `github`, `coworker`; default is all three
+- `-h, --help`: Show help
 
-Note: Either `--range` or `--sha` must be specified. The script does not default to a time range.
+Period dates always come from `--range`, or from `--sha` author dates. The `coworker` tool uses that window for meetings.
 
 ## Examples
 
-Analyze commits by author since a specific date:
-
 ```bash
-./tell-me-about.sh -p /path/to/repo -b main -a "Author Name" --range "2025-01-01"
-```
+# Since a date, all tools
+./tell-me-about.sh -p /path/to/repo -b main -a "Author Name" --range "2026-01-01"
 
-Analyze commits between two specific dates:
+# Between two dates
+./tell-me-about.sh -p /path/to/repo -b main -a "Author Name" --range "2026-01-01" "2026-01-31"
 
-```bash
-./tell-me-about.sh -p /path/to/repo -b main -a "Author Name" --range "2025-01-01" "2025-01-31"
-```
-
-Analyze specific commits by SHA:
-
-```bash
+# Specific SHAs
 ./tell-me-about.sh -p /path/to/repo -b main -a "Author Name" --sha abc1234 --sha def5678
-```
 
-Analyze commits with GitHub and JIRA details:
+# GitHub and JIRA only
+./tell-me-about.sh -p /path/to/repo -b main -a "Author Name" --range "2026-01-01" "2026-01-31" --tools github,jira
 
-```bash
-./tell-me-about.sh -p /path/to/repo -b main -a "Author Name" --github --jira
-```
-
-Only include merge commits in analysis:
-
-```bash
-./tell-me-about.sh -p /path/to/repo -b main -a "Author Name" --only-merges
+# Merge commits only
+./tell-me-about.sh -p /path/to/repo -b main -a "Author Name" --range "2026-01-01" --only-merges
 ```
 
 ## Output Structure
 
-The script creates directories at:
+Default root is `$HOME/tellme`. Override with `OUTPUT_DIR`.
 
+```text
+$OUTPUT_DIR/{repo_name}/{branch}/{author}/
+|-- {short_commit}/
+|   |-- diff.txt
+|   |-- pr.json
+|   `-- jira.txt
+`-- meetings/
+    `-- YYYY-MM-DD_slug/
+        |-- details.txt
+        `-- transcript.txt
 ```
-$HOME/tmaatw/{repo_name}/{branch}/{author}/{short_commit}/
-```
 
-Each commit directory contains:
+Branch and author path segments are lowercased and sanitized for the filesystem. The CLI creates `meetings/`; the parent skill fills meeting files.
 
-- `diff.txt`: Full commit diff, message, and list of changed files
-- `pr.json`: GitHub pull request details as JSON, created when `--github` is used
-- `jira.txt`: JIRA ticket details and comments, created when `--jira` is used
+Child skills write distinct report files under `updates/`:
 
-## GitHub Authentication
+- `updates/weekly-update-YYYY-MM-DD.md`
+- `updates/one-one-one-YYYY-MM-DD.md`
+- `updates/brag-book-YYYY-MM-DD.md`
 
-When using the `--github` option, the script requires GitHub CLI to be installed and authenticated.
+## Terminal Output
 
-Setup:
+[`tools/lib/print.sh`](tools/lib/print.sh) formats the commit and meetings summary cards at the end of a run. Everything else is plain bash.
+
+- Summary stdout: `print_section` / `print_field` / `print_paths` for Commit, Diff, Jira, GitHub, Meetings, Window, Parent, Child
+- Errors stderr: `echo "function:: message" >&2`
+- Separators: ASCII hyphens; width from `COLUMNS`, capped at 120
+- Summary cards always use color
+
+## Authentication
+
+### GitHub
+
+When `github` is enabled:
 
 ```bash
 gh auth login --web --hostname github.com
-```
-
-Verify authentication:
-
-```bash
 gh auth status
 ```
 
-## JIRA Authentication
+### JIRA
 
-When using the `--jira` option, the script requires Atlassian CLI to be installed and authenticated.
-
-Required Permissions:
-
-- Browse Projects: Read access to projects containing referenced tickets
-- Read Issues: Permission to view issue details
-- Read Comments: Permission to view issue comments
-
-Setup:
-
-Install Atlassian CLI following the [installation guide](https://developer.atlassian.com/cloud/acli/guides/install-acli/).
-
-Authenticate with OAuth:
+When `jira` is enabled, install Atlassian CLI from the [installation guide](https://developer.atlassian.com/cloud/acli/guides/install-acli/), then authenticate:
 
 ```bash
 acli jira auth login --web
-```
-
-Or authenticate with API token:
-
-```bash
+# or
 acli jira auth login --site "your-site.atlassian.net" --email "your-email@example.com" --token
-```
-
-Verify authentication:
-
-```bash
 acli jira auth status
 ```
 
-## Testing
+Needed permissions: browse projects, read issues, read comments.
 
-Run all tests:
+### Coworker MCP
+
+Add a Coworker server to `~/.cursor/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "coworker": {
+      "type": "http",
+      "url": "https://odin.coworker.ai/mcp"
+    }
+  }
+}
+```
+
+After a run with `coworker` enabled, use the parent skill to build the evidence set and write meetings, then a child skill for the report:
+
+- Parent: [`.cursor/skills/tell-me-about-a-time-when/SKILL.md`](.cursor/skills/tell-me-about-a-time-when/SKILL.md)
+  - Child: [`.cursor/skills/weekly-update/SKILL.md`](.cursor/skills/weekly-update/SKILL.md)
+  - Child: [`.cursor/skills/one-one-one/SKILL.md`](.cursor/skills/one-one-one/SKILL.md)
+  - Child: [`.cursor/skills/brag-book/SKILL.md`](.cursor/skills/brag-book/SKILL.md)
+
+Override the MCP config path with `COWORKER_MCP_CONFIG` in tests or automation.
+
+## Testing
 
 ```bash
 make test
-```
-
-Run linting:
-
-```bash
 make lint
 ```
 
-## Standalone Tool Usage
+Suites:
 
-The GitHub and JIRA tools can be used independently.
-
-Get PR details for a commit:
-
-```bash
-./tools/github.sh <commit_hash>
-```
-
-Get JIRA ticket details:
-
-```bash
-./tools/jira.sh <ticket_id>
-```
+- `tests/tell-me-about-tests.sh`: orchestrator
+- `tests/tools/*-tests.sh`: tools and shared libs
+- `tests/helpers/`: fixtures and Bats bootstrap
 
 ## Environment Variables
 
-- `HOME`: Used to determine the output directory base path, must be set
-- `OUTPUT_DIR`: Override the default output directory, defaults to `$HOME/tmaatw`
+- `HOME`: Required; used for the default output root and MCP config path
+- `OUTPUT_DIR`: Output root; defaults to `$HOME/tellme`
+- `COWORKER_MCP_CONFIG`: Cursor MCP JSON path; defaults to `$HOME/.cursor/mcp.json`
+- `COWORKER_TIMEZONE`: Optional IANA timezone for project skills
+- `COLUMNS`: Terminal width hint for summary separators; capped at 120

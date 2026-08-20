@@ -1,4 +1,4 @@
-.cursor
-.vscode
-
 updates/
+*.swp
+.DS_Store
+*.bats_tmp

@@ -5,208 +5,294 @@
 
 setup_file() {
 	GIT_ROOT="$(git rev-parse --show-toplevel || echo "")"
-	if [[ -z "$GIT_ROOT" ]]; then
+	if [[ -z "${GIT_ROOT}" ]]; then
 		echo "Failed to get git root" >&2
 		return 1
 	fi
 
-	SCRIPT="$GIT_ROOT/tell-me-about.sh"
-	if [[ ! -f "$SCRIPT" ]]; then
-		echo "Script not found: $SCRIPT" >&2
+	SCRIPT="${GIT_ROOT}/tell-me-about.sh"
+	HELPER="${GIT_ROOT}/tests/helpers/repo.sh"
+	if [[ ! -f "${SCRIPT}" ]]; then
+		echo "Script not found: ${SCRIPT}" >&2
 		return 1
 	fi
 
+	if [[ ! -f "${HELPER}" ]]; then
+		echo "Helper not found: ${HELPER}" >&2
+		return 1
+	fi
+
+	# shellcheck disable=SC1090
+	source "${HELPER}"
+	init_shared_fixtures || return 1
+
 	export GIT_ROOT
 	export SCRIPT
+	export HELPER
 
 	return 0
 }
 
 setup() {
-	TEST_DIR=$(mktemp -d)
+	TEST_DIR="${BATS_TEST_TMPDIR:-$(mktemp -d)}"
 	export TEST_DIR
+	cd "${GIT_ROOT}" || return 1
 
-	trap 'rm -rf "$TEST_DIR"' EXIT
-
-	# Source the script to make functions available for unit testing
 	# shellcheck disable=SC1090
+	source "${GIT_ROOT}/tests/helpers/bats-setup.sh"
+	bats_unset_load_guards
+
+	# shellcheck disable=SC1090
+	source "${HELPER}"
 	set +e
-	source "$SCRIPT" || true
+	source "${SCRIPT}" || true
 	set +e
 
-	# Reset global variables that may be set by functions
-	unset PERIOD_START PERIOD_END
+	# Unit tests call helpers without main; load shared libs via _setup.
+	_setup || return 1
+
+	unset PERIOD_START PERIOD_END RANGE_DATE1 RANGE_DATE2 AUTHOR BRANCH REPO_PATH
+	unset ONLY_MERGES CHECK_GITHUB CHECK_JIRA CHECK_COWORKER SANITIZED_AUTHOR SANITIZED_BRANCH
+	print_init
+	COMMIT_SHAS=()
+	COMMITS=()
 	OUTPUT_DIR="${TEST_DIR}/output"
 	export OUTPUT_DIR
+	COWORKER_MCP_CONFIG="${TEST_DIR}/mcp.json"
+	cat <<'EOF' >"${COWORKER_MCP_CONFIG}"
+{
+  "mcpServers": {
+    "coworker": {}
+  }
+}
+EOF
+	export COWORKER_MCP_CONFIG
 
 	return 0
 }
 
-# Creates a test git repository with multiple commits and authors for testing
-# Uses worktrees
-create_test_repo() {
-	local repo_dir="$1"
-	local bare_repo
-	local worktree_path
-
-	bare_repo="${TEST_DIR}/bare_repo.git"
-	worktree_path="${repo_dir}"
-
-	git init --bare "${bare_repo}" >/dev/null 2>&1
-	git -C "${bare_repo}" worktree add "${worktree_path}" >/dev/null 2>&1
-	cd "${worktree_path}" || return 1
-
-	git config user.name "Test User"
-	git config user.email "test@example.com"
-
-	echo "test file" >test.txt
-	git add test.txt
-	git commit -m "Initial commit" >/dev/null 2>&1
-
-	local default_branch
-	default_branch=$(git symbolic-ref --short HEAD 2>/dev/null || echo "master")
-	if [[ "$default_branch" != "master" ]]; then
-		git branch -m master >/dev/null 2>&1 || true
-	fi
-
-	# Create commits with different authors to test author filtering
-	echo "change by author1" >>test.txt
-	git add test.txt
-	GIT_COMMITTER_NAME="Author One" GIT_COMMITTER_EMAIL="author1@example.com" \
-		git commit --author="Author One <author1@example.com>" -m "Commit by author1" >/dev/null 2>&1
-
-	echo "change by author2" >>test.txt
-	git add test.txt
-	GIT_COMMITTER_NAME="Author Two" GIT_COMMITTER_EMAIL="author2@example.com" \
-		git commit --author="Author Two <author2@example.com>" -m "Commit by author2" >/dev/null 2>&1
-
-	# Create test-branch for branch testing
-	git checkout -b test-branch >/dev/null 2>&1
-	echo "branch change" >>test.txt
-	git add test.txt
-	git commit -m "Branch commit" >/dev/null 2>&1
-
-	default_branch=$(git symbolic-ref --short HEAD 2>/dev/null || echo "master")
-	git checkout "$default_branch" >/dev/null 2>&1
-
-	return 0
+# usage
+@test "usage:: shows help correctly" {
+	run "${SCRIPT}" --help
+	[[ "${status}" -eq 0 ]]
+	echo "${output}" | grep -q "Usage:"
+	echo "${output}" | grep -q "Options:"
+	echo "${output}" | grep -q "\\-\\-range"
+	echo "${output}" | grep -q "\\-\\-tools"
 }
 
-########################################################
-# Unit Tests
-########################################################
-
-@test "unit:: shows help correctly" {
-	run "$SCRIPT" --help
-	[[ "$status" -eq 0 ]]
-	echo "$output" | grep -q "Usage:"
-	echo "$output" | grep -q "Options:"
-	echo "$output" | grep -q "\\-\\-range"
+@test "main:: fails with unknown option" {
+	run "${SCRIPT}" --unknown-option
+	[[ "${status}" -ne 0 ]]
+	echo "${output}" | grep -q "Unknown option"
 }
 
-@test "unit:: fails with unknown option" {
-	run "$SCRIPT" --unknown-option
-	[[ "$status" -ne 0 ]]
-	echo "$output" | grep -q "Unknown option"
+@test "main:: rejects removed individual tool flags" {
+	run "${SCRIPT}" --jira
+	[[ "${status}" -ne 0 ]]
+	echo "${output}" | grep -q "Unknown option '--jira'"
 }
 
-@test "unit:: fails with missing required arguments" {
-	run "$SCRIPT"
-	[[ "$status" -ne 0 ]]
-	echo "$output" | grep -qE "Missing required arguments|--range or --sha is required"
+@test "main:: fails when --tools has no value" {
+	run "${SCRIPT}" --tools
+	[[ "${status}" -ne 0 ]]
+	echo "${output}" | grep -q "\\-\\-tools requires"
 }
 
-@test "unit:: fails when neither --range nor --sha is provided" {
-	local bare_repo="${TEST_DIR}/range_sha_bare.git"
-	local test_repo="${TEST_DIR}/range_sha_repo"
-	git init --bare "${bare_repo}" >/dev/null 2>&1
-	git -C "${bare_repo}" worktree add "${test_repo}" >/dev/null 2>&1
-	cd "${test_repo}" || return 1
-	git config user.name "Test User"
-	git config user.email "test@example.com"
-	echo "test" >file.txt
-	git add file.txt
-	git commit -m "Initial commit" >/dev/null 2>&1
-
-	run "$SCRIPT" -p "${test_repo}" -b "master" -a "Test User"
-	[[ "$status" -ne 0 ]]
-	echo "$output" | grep -q "main:: --range or --sha is required"
+@test "main:: fails with missing required arguments" {
+	run "${SCRIPT}"
+	[[ "${status}" -ne 0 ]]
+	echo "${output}" | grep -qE "Missing required arguments|--range or --sha is required"
 }
 
-@test "unit:: fails with invalid repository path" {
-	run "$SCRIPT" -p "/nonexistent/path" -b "master" -a "test@example.com" --range "2025-01-01"
-	[[ "$status" -ne 0 ]]
-	echo "$output" | grep -q "Invalid repository path"
+@test "main:: fails when neither --range nor --sha is provided" {
+	create_worktree_repo "${TEST_DIR}/range_sha_repo"
+
+	run "${SCRIPT}" -p "${TEST_DIR}/range_sha_repo" -b "master" -a "Test User"
+	[[ "${status}" -ne 0 ]]
+	echo "${output}" | grep -q "main:: --range or --sha is required"
 }
 
-@test "unit:: fails when using --range option twice" {
-	run "$SCRIPT" -p "/tmp" -b "master" -a "test@example.com" --range "2025-01-01" --range "2025-06-01"
-	[[ "$status" -ne 0 ]]
-	echo "$output" | grep -q "main:: --range option can only be used once"
+@test "validate_args:: fails with invalid repository path" {
+	run "${SCRIPT}" -p "/nonexistent/path" -b "master" -a "test@example.com" --range "2025-01-01"
+	[[ "${status}" -ne 0 ]]
+	echo "${output}" | grep -q "Invalid repository path"
 }
 
-@test "unit:: fails with invalid date format in --range" {
-	local bare_repo="${TEST_DIR}/date_test_bare.git"
-	local test_repo="${TEST_DIR}/date_test_repo"
+@test "main:: fails when using --range option twice" {
+	run "${SCRIPT}" -p "/tmp" -b "master" -a "test@example.com" --range "2025-01-01" --range "2025-06-01"
+	[[ "${status}" -ne 0 ]]
+	echo "${output}" | grep -q "main:: --range option can only be used once"
+}
 
-	git init --bare "${bare_repo}" >/dev/null 2>&1
-	git -C "${bare_repo}" worktree add "${test_repo}" >/dev/null 2>&1
+# configure_tools
+@test "configure_tools:: enables all tools by default" {
+	configure_tools ""
 
-	cd "${test_repo}" || return 1
-	git config user.name "Test User"
-	git config user.email "test@example.com"
-	echo "test" >file.txt
-	git add file.txt
-	git commit -m "Initial commit" >/dev/null 2>&1
+	[[ "${CHECK_GITHUB}" == "true" ]]
+	[[ "${CHECK_JIRA}" == "true" ]]
+	[[ "${CHECK_COWORKER}" == "true" ]]
+}
 
-	local default_branch
-	default_branch=$(git symbolic-ref --short HEAD 2>/dev/null || echo "master")
-	if [[ "$default_branch" != "master" ]]; then
-		git branch -m master >/dev/null 2>&1 || true
-	fi
+@test "configure_tools:: enables only selected tools" {
+	configure_tools "jira,coworker"
 
-	run "$SCRIPT" -p "$test_repo" -b "master" -a "Test User" --range "invalid-date"
-	[[ "$status" -ne 0 ]]
-	echo "$output" | grep -q "determine_period_dates:: Failed to parse date"
+	[[ "${CHECK_GITHUB}" == "false" ]]
+	[[ "${CHECK_JIRA}" == "true" ]]
+	[[ "${CHECK_COWORKER}" == "true" ]]
+}
+
+@test "configure_tools:: fails for an unknown tool" {
+	run configure_tools "jira,gitlab"
+	[[ "${status}" -ne 0 ]]
+	echo "${output}" | grep -q "Unknown tool 'gitlab'"
+}
+
+@test "configure_tools:: fails for empty list entries" {
+	run configure_tools "jira,,coworker"
+	[[ "${status}" -ne 0 ]]
+	echo "${output}" | grep -q "Invalid tool list"
+}
+
+# validate_enabled_tools
+@test "validate_enabled_tools:: succeeds when enabled tools pass checks" {
+	CHECK_JIRA="true"
+	CHECK_GITHUB="true"
+	CHECK_COWORKER="true"
+
+	check_jira_dependencies() { return 0; }
+	validate_jira_auth() { return 0; }
+	check_github_dependencies() { return 0; }
+	check_coworker_dependencies() { return 0; }
+	resolve_mcp_config() {
+		echo "${COWORKER_MCP_CONFIG}"
+		return 0
+	}
+	check_coworker_mcp() { return 0; }
+
+	run validate_enabled_tools
+	[[ "${status}" -eq 0 ]]
+}
+
+@test "validate_enabled_tools:: skips disabled tools" {
+	CHECK_JIRA="false"
+	CHECK_GITHUB="false"
+	CHECK_COWORKER="false"
+
+	check_jira_dependencies() {
+		echo "check_jira_dependencies:: should not run" >&2
+		return 1
+	}
+	check_github_dependencies() {
+		echo "check_github_dependencies:: should not run" >&2
+		return 1
+	}
+	check_coworker_dependencies() {
+		echo "check_coworker_dependencies:: should not run" >&2
+		return 1
+	}
+
+	run validate_enabled_tools
+	[[ "${status}" -eq 0 ]]
+	[[ -z "${output}" ]]
+}
+
+@test "validate_enabled_tools:: fails when jira dependencies are missing" {
+	CHECK_JIRA="true"
+	CHECK_GITHUB="false"
+	CHECK_COWORKER="false"
+
+	check_jira_dependencies() {
+		echo "check_jira_dependencies:: Atlassian CLI (acli) is not installed or not in PATH" >&2
+		return 1
+	}
+	validate_jira_auth() { return 0; }
+
+	run validate_enabled_tools
+	[[ "${status}" -ne 0 ]]
+	echo "${output}" | grep -q "Atlassian CLI (acli) is not installed"
+}
+
+@test "validate_enabled_tools:: fails when github is not authenticated" {
+	CHECK_JIRA="false"
+	CHECK_GITHUB="true"
+	CHECK_COWORKER="false"
+
+	check_github_dependencies() {
+		echo "check_github_dependencies:: GitHub CLI is not authenticated" >&2
+		return 1
+	}
+
+	run validate_enabled_tools
+	[[ "${status}" -ne 0 ]]
+	echo "${output}" | grep -q "GitHub CLI is not authenticated"
+}
+
+@test "validate_enabled_tools:: fails when coworker MCP is missing" {
+	CHECK_JIRA="false"
+	CHECK_GITHUB="false"
+	CHECK_COWORKER="true"
+
+	check_coworker_dependencies() { return 0; }
+	resolve_mcp_config() {
+		echo "${COWORKER_MCP_CONFIG}"
+		return 0
+	}
+	check_coworker_mcp() {
+		echo "check_coworker_mcp:: Coworker MCP is not configured" >&2
+		return 1
+	}
+
+	run validate_enabled_tools
+	[[ "${status}" -ne 0 ]]
+	echo "${output}" | grep -q "Coworker MCP is not configured"
+}
+
+@test "determine_period_dates:: fails with invalid date format in --range" {
+	create_worktree_repo "${TEST_DIR}/date_test_repo"
+
+	run "${SCRIPT}" -p "${TEST_DIR}/date_test_repo" -b "master" -a "Test User" --range "invalid-date" --tools coworker
+	[[ "${status}" -ne 0 ]]
+	echo "${output}" | grep -q "determine_period_dates:: Failed to parse"
 }
 
 # parse_date
 @test "parse_date:: parses valid ISO date format" {
 	local result
 	result=$(parse_date "2026-01-19")
-	[[ "$result" == "2026-01-19" ]]
+	[[ "${result}" == "2026-01-19" ]]
 }
 
 @test "parse_date:: parses valid ISO date format with different date" {
 	local result
 	result=$(parse_date "2025-12-31")
-	[[ "$result" == "2025-12-31" ]]
+	[[ "${result}" == "2025-12-31" ]]
 }
 
 @test "parse_date:: fails with relative date '1 week ago'" {
 	run parse_date "1 week ago"
-	[[ "$status" -ne 0 ]]
-	echo "$output" | grep -q "Invalid date format"
+	[[ "${status}" -ne 0 ]]
+	echo "${output}" | grep -q "Invalid date format"
 }
 
 @test "parse_date:: fails with invalid date format" {
 	run parse_date "invalid-date"
-	[[ "$status" -ne 0 ]]
+	[[ "${status}" -ne 0 ]]
 }
 
 @test "parse_date:: fails with empty string" {
 	run parse_date ""
-	[[ "$status" -ne 0 ]]
+	[[ "${status}" -ne 0 ]]
 }
 
 @test "parse_date:: fails with malformed ISO date" {
 	run parse_date "2026-13-45"
-	[[ "$status" -ne 0 ]]
+	[[ "${status}" -ne 0 ]]
 }
 
 @test "parse_date:: fails with wrong date format" {
 	run parse_date "01/19/2026"
-	[[ "$status" -ne 0 ]]
+	[[ "${status}" -ne 0 ]]
 }
 
 # determine_period_dates
@@ -214,49 +300,110 @@ create_test_repo() {
 	RANGE_DATE1="2026-01-19"
 	RANGE_DATE2="2026-01-23"
 	determine_period_dates
-	[[ "$PERIOD_START" == "2026-01-19" ]]
-	[[ "$PERIOD_END" == "2026-01-23" ]]
+	[[ "${PERIOD_START}" == "2026-01-19" ]]
+	[[ "${PERIOD_END}" == "2026-01-23" ]]
 }
 
 @test "determine_period_dates:: sets PERIOD_START and PERIOD_END with single date" {
 	RANGE_DATE1="2026-01-19"
 	RANGE_DATE2=""
 	determine_period_dates
-	[[ "$PERIOD_START" == "2026-01-19" ]]
-	[[ -n "$PERIOD_END" ]]
-	[[ "$PERIOD_END" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]
+	[[ "${PERIOD_START}" == "2026-01-19" ]]
+	[[ -n "${PERIOD_END}" ]]
+	[[ "${PERIOD_END}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]
 }
 
 @test "determine_period_dates:: fails with no dates" {
 	RANGE_DATE1=""
 	RANGE_DATE2=""
 	run determine_period_dates
-	[[ "$status" -ne 0 ]]
-	echo "$output" | grep -q "determine_period_dates:: --range requires at least one date"
+	[[ "${status}" -ne 0 ]]
+	echo "${output}" | grep -q "determine_period_dates:: --range requires at least one date"
 }
 
 @test "determine_period_dates:: fails with invalid first date" {
 	RANGE_DATE1="invalid-date"
 	RANGE_DATE2="2026-01-23"
 	run determine_period_dates
-	[[ "$status" -ne 0 ]]
-	echo "$output" | grep -q "determine_period_dates:: Failed to parse date"
+	[[ "${status}" -ne 0 ]]
+	echo "${output}" | grep -q "determine_period_dates:: Failed to parse"
 }
 
 @test "determine_period_dates:: fails with invalid second date" {
 	RANGE_DATE1="2026-01-19"
 	RANGE_DATE2="invalid-date"
 	run determine_period_dates
-	[[ "$status" -ne 0 ]]
-	echo "$output" | grep -q "determine_period_dates:: Failed to parse date"
+	[[ "${status}" -ne 0 ]]
+	echo "${output}" | grep -q "determine_period_dates:: Failed to parse"
 }
 
 @test "determine_period_dates:: fails with invalid single date" {
 	RANGE_DATE1="invalid-date"
 	RANGE_DATE2=""
 	run determine_period_dates
-	[[ "$status" -ne 0 ]]
-	echo "$output" | grep -q "determine_period_dates:: Failed to parse date"
+	[[ "${status}" -ne 0 ]]
+	echo "${output}" | grep -q "determine_period_dates:: Failed to parse"
+}
+
+# sanitize_names
+@test "sanitize_names:: lowercases author and replaces slashes in branch" {
+	sanitize_names "Author One" "feature/my-feature"
+	[[ "${SANITIZED_AUTHOR}" == "author_one" ]]
+	[[ "${SANITIZED_BRANCH}" == "feature_my-feature" ]]
+}
+
+@test "sanitize_names:: fails when author is empty" {
+	run sanitize_names "" "main"
+	[[ "${status}" -ne 0 ]]
+	echo "${output}" | grep -q "author or branch is not set"
+}
+
+# get_commits
+@test "get_commits:: selects commits by author" {
+	create_analyzer_repo "${TEST_DIR}/repo"
+	REPO_PATH="${TEST_DIR}/repo"
+	BRANCH="master"
+	AUTHOR="Author One"
+	PERIOD_START="2020-01-01"
+	PERIOD_END="2030-12-31"
+
+	get_commits
+	[[ "${#COMMITS[@]}" -eq 1 ]]
+}
+
+@test "get_commits:: --sha resolves short hashes" {
+	create_analyzer_repo "${TEST_DIR}/repo"
+	REPO_PATH="${TEST_DIR}/repo"
+	BRANCH="master"
+	AUTHOR="Author One"
+	local sha
+	sha=$(git -C "${TEST_DIR}/repo" rev-parse HEAD)
+	COMMIT_SHAS=("${sha}")
+
+	get_commits
+	[[ "${#COMMITS[@]}" -eq 1 ]]
+}
+
+@test "get_commits:: --only-merges includes merge commits matching author in subject" {
+	create_analyzer_repo "${TEST_DIR}/repo"
+	cd "${TEST_DIR}/repo"
+	git checkout master >/dev/null 2>&1
+	git checkout -b feature-author-one >/dev/null 2>&1
+	echo "merge change" >>test.txt
+	git add test.txt
+	git commit -m "feature work" >/dev/null 2>&1
+	git checkout master >/dev/null 2>&1
+	git merge --no-ff feature-author-one -m "Merge branch 'feature-author-one' of Author One" >/dev/null 2>&1
+
+	REPO_PATH="${TEST_DIR}/repo"
+	BRANCH="master"
+	AUTHOR="Author One"
+	ONLY_MERGES="true"
+	PERIOD_START="2020-01-01"
+	PERIOD_END="2030-12-31"
+
+	get_commits
+	[[ "${#COMMITS[@]}" -ge 1 ]]
 }
 
 ########################################################
@@ -264,137 +411,117 @@ create_test_repo() {
 ########################################################
 
 @test "integration:: basic commit analysis works" {
-	create_test_repo "$TEST_DIR"
+	create_analyzer_repo "${TEST_DIR}/repo"
 
-	run "$SCRIPT" -p "$TEST_DIR" -b "master" -a "Author One" --range "2020-01-01"
+	run "${SCRIPT}" -p "${TEST_DIR}/repo" -b "master" -a "Author One" --range "2020-01-01" --tools coworker
 
-	if [[ "$status" -ne 0 ]]; then
-		echo "Script failed: $output" >&3
+	if [[ "${status}" -ne 0 ]]; then
+		echo "Script failed: ${output}" >&3
 	fi
-	[[ "$status" -eq 0 ]]
-	echo "$output" | grep -q "Commit:"
+	[[ "${status}" -eq 0 ]]
+	echo "${output}" | grep -q "Commit:"
 
-	# Verify output directory and commit directory created
-	local repo_name
-	repo_name=$(basename "$TEST_DIR")
-	local base_dir="${OUTPUT_DIR}/${repo_name}"
-	local output_dir="$base_dir/master/author_one"
-	[[ -d "$output_dir" ]]
+	local output_dir="${OUTPUT_DIR}/repo/master/author_one"
+	[[ -d "${output_dir}" ]]
 
-	# Find commit directory (hash is unpredictable)
 	shopt -s nullglob
-	local commit_dirs=("$output_dir"/*)
+	local commit_dirs=("${output_dir}"/*)
 	shopt -u nullglob
 	[[ ${#commit_dirs[@]} -eq 1 ]]
 	[[ -d "${commit_dirs[0]}" ]]
 	[[ -f "${commit_dirs[0]}/diff.txt" ]]
 	grep -q "Commit by author1" "${commit_dirs[0]}/diff.txt"
-
 }
 
 @test "integration:: handles time range parameter" {
-	create_test_repo "$TEST_DIR"
+	create_analyzer_repo "${TEST_DIR}/repo"
 
-	# Single date: from 2020-01-01 to now
-	run "$SCRIPT" -p "$TEST_DIR" -b "master" -a "Author One" --range "2020-01-01"
+	run "${SCRIPT}" -p "${TEST_DIR}/repo" -b "master" -a "Author One" --range "2020-01-01" --tools coworker
 
-	[[ "$status" -eq 0 ]]
-	echo "$output" | grep -q "Commit:"
+	[[ "${status}" -eq 0 ]]
+	echo "${output}" | grep -q "Commit:"
 }
 
 @test "integration:: handles different branch" {
-	create_test_repo "$TEST_DIR"
+	create_analyzer_repo "${TEST_DIR}/repo"
 
-	run "$SCRIPT" -p "$TEST_DIR" -b "test-branch" -a "Test User" --range "2020-01-01"
+	run "${SCRIPT}" -p "${TEST_DIR}/repo" -b "test-branch" -a "Test User" --range "2020-01-01" --tools coworker
 
-	[[ "$status" -eq 0 ]]
-	echo "$output" | grep -q "Commit:"
+	[[ "${status}" -eq 0 ]]
+	echo "${output}" | grep -q "Commit:"
 }
 
 @test "integration:: handles author not found" {
-	create_test_repo "$TEST_DIR"
+	create_analyzer_repo "${TEST_DIR}/repo"
 
-	run "$SCRIPT" -p "$TEST_DIR" -b "master" -a "NonExistent Author" --range "2020-01-01"
+	run "${SCRIPT}" -p "${TEST_DIR}/repo" -b "master" -a "NonExistent Author" --range "2020-01-01" --tools coworker
 
-	[[ "$status" -ne 0 ]]
-	echo "$output" | grep -q "not found in the commit history"
+	[[ "${status}" -ne 0 ]]
+	echo "${output}" | grep -q "not found in the commit history"
 }
 
 @test "integration:: output includes commit details and diffs" {
-	create_test_repo "$TEST_DIR"
+	create_analyzer_repo "${TEST_DIR}/repo"
 
-	run "$SCRIPT" -p "$TEST_DIR" -b "master" -a "Author One" --range "2020-01-01"
+	run "${SCRIPT}" -p "${TEST_DIR}/repo" -b "master" -a "Author One" --range "2020-01-01" --tools coworker
 
-	[[ "$status" -eq 0 ]]
+	[[ "${status}" -eq 0 ]]
 
-	local repo_name
-	repo_name=$(basename "$TEST_DIR")
-	local base_dir="${OUTPUT_DIR}/${repo_name}"
-	local output_dir="$base_dir/master/author_one"
-	[[ -d "$output_dir" ]]
+	local output_dir="${OUTPUT_DIR}/repo/master/author_one"
+	[[ -d "${output_dir}" ]]
 
 	shopt -s nullglob
-	local commit_dirs=("$output_dir"/*)
+	local commit_dirs=("${output_dir}"/*)
 	shopt -u nullglob
 	[[ ${#commit_dirs[@]} -eq 1 ]]
 	[[ -d "${commit_dirs[0]}" ]]
 	[[ -f "${commit_dirs[0]}/diff.txt" ]]
-
 	grep -q "Commit by author1" "${commit_dirs[0]}/diff.txt"
-
 }
 
 @test "integration:: --range flag works with date range" {
-	create_test_repo "$TEST_DIR"
+	create_analyzer_repo "${TEST_DIR}/repo"
 
-	# Wide date range should include all commits
-	run "$SCRIPT" -p "$TEST_DIR" -b "master" -a "Author One" --range "2020-01-01" "2030-12-31"
+	run "${SCRIPT}" -p "${TEST_DIR}/repo" -b "master" -a "Author One" --range "2020-01-01" "2030-12-31" --tools coworker
 
-	[[ "$status" -eq 0 ]]
-	echo "$output" | grep -q "Commit:"
+	[[ "${status}" -eq 0 ]]
+	echo "${output}" | grep -q "Commit:"
 
-	local repo_name
-	repo_name=$(basename "$TEST_DIR")
-	local base_dir="${OUTPUT_DIR}/${repo_name}"
-	local output_dir="$base_dir/master/author_one"
-	[[ -d "$output_dir" ]]
+	local output_dir="${OUTPUT_DIR}/repo/master/author_one"
+	[[ -d "${output_dir}" ]]
 
 	shopt -s nullglob
-	local commit_dirs=("$output_dir"/*)
+	local commit_dirs=("${output_dir}"/*)
 	shopt -u nullglob
 	[[ ${#commit_dirs[@]} -eq 1 ]]
 	[[ -d "${commit_dirs[0]}" ]]
 	[[ -f "${commit_dirs[0]}/diff.txt" ]]
 	grep -q "Commit by author1" "${commit_dirs[0]}/diff.txt"
-
 }
 
 @test "integration:: --range flag works with single date" {
-	create_test_repo "$TEST_DIR"
+	create_analyzer_repo "${TEST_DIR}/repo"
 
-	# Single date is treated as --since, from that date to now
-	run "$SCRIPT" -p "$TEST_DIR" -b "master" -a "Author One" --range "2020-01-01"
+	run "${SCRIPT}" -p "${TEST_DIR}/repo" -b "master" -a "Author One" --range "2020-01-01" --tools coworker
 
-	[[ "$status" -eq 0 ]]
-	echo "$output" | grep -q "Commit:"
+	[[ "${status}" -eq 0 ]]
+	echo "${output}" | grep -q "Commit:"
 }
 
 @test "integration:: --range flag filters commits correctly" {
-	create_test_repo "$TEST_DIR"
+	create_analyzer_repo "${TEST_DIR}/repo"
 
-	# Narrow date range from 2000-2001 should exclude all test commits
-	run "$SCRIPT" -p "$TEST_DIR" -b "master" -a "Author One" --range "2000-01-01" "2001-12-31"
+	run "${SCRIPT}" -p "${TEST_DIR}/repo" -b "master" -a "Author One" --range "2000-01-01" "2001-12-31" --tools coworker
 
-	[[ "$status" -eq 0 ]]
-	echo "$output" | grep -q "No commits found"
+	[[ "${status}" -eq 0 ]]
+	echo "${output}" | grep -q "No commits found"
 }
 
 @test "integration:: branch name sanitization" {
-	create_test_repo "$TEST_DIR"
+	create_analyzer_repo "${TEST_DIR}/repo"
 
-	# Create branch with special characters to test sanitization
 	(
-		cd "$TEST_DIR"
+		cd "${TEST_DIR}/repo"
 		git checkout -b "feature/my-feature" >/dev/null 2>&1
 		echo "feature commit" >>test.txt
 		git add test.txt
@@ -402,14 +529,164 @@ create_test_repo() {
 			git commit --author="Author One <author1@example.com>" -m "Feature commit" >/dev/null 2>&1
 	)
 
-	run "$SCRIPT" -p "$TEST_DIR" -b "feature/my-feature" -a "Author One" --range "2020-01-01"
+	run "${SCRIPT}" -p "${TEST_DIR}/repo" -b "feature/my-feature" -a "Author One" --range "2020-01-01" --tools coworker
 
-	[[ "$status" -eq 0 ]]
+	[[ "${status}" -eq 0 ]]
 
-	# Verify slashes in branch name are sanitized to underscores in directory name
-	local repo_name
-	repo_name=$(basename "$TEST_DIR")
-	local output_dir="${OUTPUT_DIR}/${repo_name}/feature_my-feature/author_one"
-	[[ -d "$output_dir" ]]
+	local output_dir="${OUTPUT_DIR}/repo/feature_my-feature/author_one"
+	[[ -d "${output_dir}" ]]
+}
 
+@test "integration:: --sha analyzes a specific commit" {
+	create_analyzer_repo "${TEST_DIR}/repo"
+	local sha
+	sha=$(git -C "${TEST_DIR}/repo" log --author="Author One" --format=%H -n 1)
+
+	run "${SCRIPT}" -p "${TEST_DIR}/repo" -b "master" -a "Author One" --sha "${sha}" --tools coworker
+
+	[[ "${status}" -eq 0 ]]
+	echo "${output}" | grep -q "Commit:"
+	grep -q "Commit by author1" "${OUTPUT_DIR}/repo/master/author_one/"*/diff.txt
+}
+
+@test "process_commits:: invokes github write helpers" {
+	create_analyzer_repo "${TEST_DIR}/repo"
+	REPO_PATH="${TEST_DIR}/repo"
+	OUTPUT_PATH="${TEST_DIR}/out"
+	mkdir -p "${OUTPUT_PATH}"
+	CHECK_GITHUB="true"
+	CHECK_JIRA="false"
+	CHECK_COWORKER="false"
+
+	write_pr_details() {
+		local commit="$1"
+		local pr_file="$2"
+		printf '%s\n' '[]' >"${pr_file}"
+		return 0
+	}
+
+	COMMITS=()
+	local sha
+	sha=$(git -C "${TEST_DIR}/repo" log --author="Author One" --format=%h -n 1)
+	COMMITS=("${sha}")
+
+	run process_commits
+	[[ "${status}" -eq 0 ]]
+	[[ -f "${OUTPUT_PATH}/${sha}/pr.json" ]]
+}
+
+@test "process_commits:: invokes jira write helpers" {
+	create_analyzer_repo "${TEST_DIR}/repo"
+	REPO_PATH="${TEST_DIR}/repo"
+	OUTPUT_PATH="${TEST_DIR}/out"
+	mkdir -p "${OUTPUT_PATH}"
+	CHECK_JIRA="true"
+	CHECK_GITHUB="false"
+	CHECK_COWORKER="false"
+
+	write_jira_details() {
+		local commit="$1"
+		local jira_file="$2"
+		printf '%s\n' 'Ticket: PROJ-123' >"${jira_file}"
+		return 0
+	}
+
+	local sha
+	sha=$(git -C "${TEST_DIR}/repo" log --author="Author One" --format=%h -n 1)
+	COMMITS=("${sha}")
+
+	run process_commits
+	[[ "${status}" -eq 0 ]]
+	[[ -s "${OUTPUT_PATH}/${sha}/jira.txt" ]]
+	echo "${output}" | grep -q "Jira:"
+}
+
+@test "process_meetings:: verifies coworker MCP and prints skill instructions" {
+	create_analyzer_repo "${TEST_DIR}/repo"
+	REPO_PATH="${TEST_DIR}/repo"
+	REPO_NAME="repo"
+	AUTHOR="Author One"
+	BRANCH="master"
+	OUTPUT_PATH="${TEST_DIR}/out"
+	PERIOD_START="2026-08-01"
+	PERIOD_END="2026-08-07"
+	mkdir -p "${OUTPUT_PATH}"
+	CHECK_COWORKER="true"
+
+	check_coworker_dependencies() {
+		return 0
+	}
+	resolve_mcp_config() {
+		echo "${COWORKER_MCP_CONFIG}"
+		return 0
+	}
+	check_coworker_mcp() {
+		return 0
+	}
+
+	run process_meetings
+	[[ "${status}" -eq 0 ]]
+	echo "${output}" | grep -q "Meetings:.*${OUTPUT_PATH}/meetings"
+	echo "${output}" | grep -q "Window:.*2026-08-01 to 2026-08-07"
+	echo "${output}" | grep -q "Parent:.*tell-me-about-a-time-when"
+	echo "${output}" | grep -q "Child:.*weekly-update"
+	echo "${output}" | grep -q "one-one-one"
+	echo "${output}" | grep -q "brag-book"
+	[[ -d "${OUTPUT_PATH}/meetings" ]]
+}
+
+@test "determine_period_from_shas:: derives window from commit author dates" {
+	create_analyzer_repo "${TEST_DIR}/repo"
+	REPO_PATH="${TEST_DIR}/repo"
+	local sha
+	sha=$(git -C "${TEST_DIR}/repo" log --author="Author One" --format=%H -n 1)
+	COMMIT_SHAS=("${sha}")
+
+	determine_period_from_shas
+	[[ -n "${PERIOD_START}" ]]
+	[[ -n "${PERIOD_END}" ]]
+	[[ "${PERIOD_START}" == "${PERIOD_END}" ]]
+}
+
+@test "set_default_author:: keeps an explicit AUTHOR" {
+	AUTHOR="Explicit Author"
+	set_default_author
+	[[ "${AUTHOR}" == "Explicit Author" ]]
+}
+
+@test "validate_repo:: sets REPO_NAME and rejects unknown authors" {
+	create_analyzer_repo "${TEST_DIR}/repo"
+	REPO_PATH="${TEST_DIR}/repo"
+	AUTHOR="Author One"
+	COMMIT_SHAS=()
+
+	validate_repo
+	[[ "${REPO_NAME}" == "repo" ]]
+
+	AUTHOR="Nobody Here"
+	run validate_repo
+	[[ "${status}" -eq 1 ]]
+	echo "${output}" | grep -q "not found in the commit history"
+}
+
+@test "append_unique_commit:: deduplicates hashes" {
+	COMMITS=()
+	append_unique_commit "abc"
+	append_unique_commit "abc"
+	append_unique_commit "def"
+	[[ "${#COMMITS[@]}" -eq 2 ]]
+	[[ "${COMMITS[0]}" == "abc" ]]
+	[[ "${COMMITS[1]}" == "def" ]]
+}
+
+@test "write_commit_details:: writes message and files when missing" {
+	create_analyzer_repo "${TEST_DIR}/repo"
+	REPO_PATH="${TEST_DIR}/repo"
+	local sha
+	local out_file="${TEST_DIR}/diff.txt"
+	sha=$(git -C "${TEST_DIR}/repo" log --author="Author One" --format=%H -n 1)
+
+	write_commit_details "${sha}" "${out_file}"
+	[[ -s "${out_file}" ]]
+	grep -q "Commit by author1" "${out_file}"
 }
