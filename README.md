@@ -35,6 +35,7 @@ tools/
   weekly-update/               Child report skill
   one-one-one/                 Child report skill
   brag-book/                   Child report skill
+  monthly-update/              Child report skill
 tests/
   helpers/
     repo.sh               Shared git fixtures
@@ -63,43 +64,41 @@ make install
 ## Usage
 
 ```bash
-./tell-me-about.sh -p <path> -b <branch> [-a <author>] (--range <date> [<end>] | --sha <commit>...) [options]
+./tell-me-about.sh [--repo <path>:<branch> ...] [-a <author>] --range <date> [<end>] [options]
 ```
 
 Required:
 
-- `-p, --path <path>`: Path to the git repository
-- `-b, --branch <branch>`: Branch to analyze
-- `--range` or `--sha`: At least one is required; they cannot be combined
+- `--repo <path>:<branch>`: Repository path and branch, repeatable
+- `--range`: Commit date window
 
 Optional:
 
 - `-a, --author <author>`: Commit author; defaults to git global `user.name` or `user.email`
 - `--range <date>`: Commits since `YYYY-MM-DD`, or between two dates when a second date is given
-- `--sha <commit>`: Specific commit SHA; repeatable; replaces `--range`
-- `--only-merges`: Only merge commits whose subject matches the author
 - `--tools <tools>`: Comma-separated subset of `jira`, `github`, `coworker`; default is all three
 - `-h, --help`: Show help
 
-Period dates always come from `--range`, or from `--sha` author dates. The `coworker` tool uses that window for meetings.
+Period dates always come from `--range`. The `coworker` tool uses that window for meetings.
 
 ## Examples
 
 ```bash
 # Since a date, all tools
-./tell-me-about.sh -p /path/to/repo -b main -a "Author Name" --range "2026-01-01"
+./tell-me-about.sh --repo /path/to/repo:main -a "Author Name" --range "2026-01-01"
 
 # Between two dates
-./tell-me-about.sh -p /path/to/repo -b main -a "Author Name" --range "2026-01-01" "2026-01-31"
+./tell-me-about.sh --repo /path/to/repo:main -a "Author Name" --range "2026-01-01" "2026-01-31"
 
-# Specific SHAs
-./tell-me-about.sh -p /path/to/repo -b main -a "Author Name" --sha abc1234 --sha def5678
+# Multiple repositories
+TELLME_REPOS_ROOT="$HOME/repos" ./tell-me-about.sh \
+  --repo repo-one:main \
+  --repo repo-two:develop \
+  -a "Author Name" \
+  --range "2026-08-01" "2026-08-26"
 
 # GitHub and JIRA only
-./tell-me-about.sh -p /path/to/repo -b main -a "Author Name" --range "2026-01-01" "2026-01-31" --tools github,jira
-
-# Merge commits only
-./tell-me-about.sh -p /path/to/repo -b main -a "Author Name" --range "2026-01-01" --only-merges
+./tell-me-about.sh --repo /path/to/repo:main -a "Author Name" --range "2026-01-01" "2026-01-31" --tools github,jira
 ```
 
 ## Output Structure
@@ -125,6 +124,7 @@ Child skills write distinct report files under `updates/`:
 - `updates/weekly-update-YYYY-MM-DD.md`
 - `updates/one-one-one-YYYY-MM-DD.md`
 - `updates/brag-book-YYYY-MM-DD.md`
+- `updates/monthly-update-YYYY-MM.md`
 
 ## Terminal Output
 
@@ -180,6 +180,7 @@ After a run with `coworker` enabled, use the parent skill to build the evidence 
   - Child: [`.cursor/skills/weekly-update/SKILL.md`](.cursor/skills/weekly-update/SKILL.md)
   - Child: [`.cursor/skills/one-one-one/SKILL.md`](.cursor/skills/one-one-one/SKILL.md)
   - Child: [`.cursor/skills/brag-book/SKILL.md`](.cursor/skills/brag-book/SKILL.md)
+  - Child: [`.cursor/skills/monthly-update/SKILL.md`](.cursor/skills/monthly-update/SKILL.md)
 
 Override the MCP config path with `COWORKER_MCP_CONFIG` in tests or automation.
 
@@ -202,4 +203,5 @@ Suites:
 - `OUTPUT_DIR`: Output root; defaults to `$HOME/tellme`
 - `COWORKER_MCP_CONFIG`: Cursor MCP JSON path; defaults to `$HOME/.cursor/mcp.json`
 - `COWORKER_TIMEZONE`: Optional IANA timezone for project skills
+- `TELLME_REPOS_ROOT`: Base directory for relative paths in `--repo`
 - `COLUMNS`: Terminal width hint for summary separators; capped at 120

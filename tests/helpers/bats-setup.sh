@@ -51,7 +51,7 @@ bats_unset_load_guards() {
 	unset -f print_init print_section print_field print_paths 2>/dev/null || true
 	unset -f require_cmd array_contains 2>/dev/null || true
 	unset -f git_cmd resolve_remote_owner_repo git_validate_repo 2>/dev/null || true
-	unset -f parse_date determine_period_dates determine_period_from_shas sanitize_names \
+	unset -f parse_date determine_period_dates sanitize_names \
 		append_unique_commit collect_merge_commits_for_author get_commits write_commit_details \
 		2>/dev/null || true
 

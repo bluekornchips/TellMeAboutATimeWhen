@@ -86,6 +86,7 @@ JSON
 	echo "$output" | grep -q "weekly-update"
 	echo "$output" | grep -q "one-one-one"
 	echo "$output" | grep -q "brag-book"
+	echo "$output" | grep -q "monthly-update"
 }
 
 @test "integration:: rejects direct script execution" {

@@ -83,49 +83,6 @@ determine_period_dates() {
 	return 0
 }
 
-# Derives PERIOD_START and PERIOD_END from explicit commit author dates
-#
-# Side Effects:
-# - Sets PERIOD_START and PERIOD_END
-#
-# Returns:
-# - 0 on success
-# - 1 on failure
-determine_period_from_shas() {
-	local earliest=""
-	local latest=""
-	local sha
-	local day
-
-	if [[ ${#COMMIT_SHAS[@]} -eq 0 ]]; then
-		echo "determine_period_from_shas:: COMMIT_SHAS is empty" >&2
-		return 1
-	fi
-
-	if [[ -z "${REPO_PATH}" ]]; then
-		echo "determine_period_from_shas:: REPO_PATH is not set" >&2
-		return 1
-	fi
-
-	for sha in "${COMMIT_SHAS[@]}"; do
-		if ! day=$(git_cmd log -1 --format=%ad --date=short "${sha}" 2>/dev/null); then
-			echo "determine_period_from_shas:: Failed to get author date for ${sha}" >&2
-			return 1
-		fi
-		if [[ -z "${earliest}" || "${day}" < "${earliest}" ]]; then
-			earliest="${day}"
-		fi
-		if [[ -z "${latest}" || "${day}" > "${latest}" ]]; then
-			latest="${day}"
-		fi
-	done
-
-	PERIOD_START="${earliest}"
-	PERIOD_END="${latest}"
-
-	return 0
-}
-
 # Sanitizes author and branch names for directory names
 #
 # Inputs:
@@ -226,7 +183,7 @@ collect_merge_commits_for_author() {
 	return 0
 }
 
-# Retrieves commits matching author or explicit SHA criteria
+# Retrieves commits matching author criteria
 #
 # Side Effects:
 # - Sets COMMITS to an array of commit hashes
@@ -235,8 +192,6 @@ collect_merge_commits_for_author() {
 # - 0 on success
 # - 1 on failure
 get_commits() {
-	local sha
-	local short_hash
 	local since_date
 	local until_date
 	local log_output
@@ -249,33 +204,19 @@ get_commits() {
 		return 1
 	fi
 
-	if [[ ${#COMMIT_SHAS[@]} -gt 0 ]]; then
-		for sha in "${COMMIT_SHAS[@]}"; do
-			if ! short_hash=$(git_cmd rev-parse --short "${sha}" 2>/dev/null); then
-				echo "get_commits:: Failed to get short hash for commit: ${sha}" >&2
-				continue
-			fi
-			append_unique_commit "${short_hash}"
-		done
-	elif [[ "${ONLY_MERGES}" == "true" ]]; then
-		since_date="${PERIOD_START} 00:00:00"
-		until_date="${PERIOD_END} 23:59:59"
-		collect_merge_commits_for_author "${since_date}" "${until_date}" || return 1
-	else
-		since_date="${PERIOD_START} 00:00:00"
-		until_date="${PERIOD_END} 23:59:59"
+	since_date="${PERIOD_START} 00:00:00"
+	until_date="${PERIOD_END} 23:59:59"
 
-		if ! log_output=$(git_cmd log --pretty=format:"%h" --regexp-ignore-case --author="${AUTHOR}" --since="${since_date}" --until="${until_date}" "${BRANCH}" 2>/dev/null); then
-			echo "get_commits:: Failed to get commit list" >&2
-			return 1
-		fi
-
-		while IFS= read -r hash; do
-			append_unique_commit "${hash}"
-		done <<<"${log_output}"
-
-		collect_merge_commits_for_author "${since_date}" "${until_date}" || return 1
+	if ! log_output=$(git_cmd log --pretty=format:"%h" --regexp-ignore-case --author="${AUTHOR}" --since="${since_date}" --until="${until_date}" "${BRANCH}" 2>/dev/null); then
+		echo "get_commits:: Failed to get commit list" >&2
+		return 1
 	fi
+
+	while IFS= read -r hash; do
+		append_unique_commit "${hash}"
+	done <<<"${log_output}"
+
+	collect_merge_commits_for_author "${since_date}" "${until_date}" || return 1
 
 	return 0
 }

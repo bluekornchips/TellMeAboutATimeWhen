@@ -119,7 +119,8 @@ write_meetings_stub() {
 	print_field "Child" ".cursor/skills/weekly-update" "path"
 	print_paths \
 		".cursor/skills/one-one-one" \
-		".cursor/skills/brag-book"
+		".cursor/skills/brag-book" \
+		".cursor/skills/monthly-update"
 
 	return 0
 }

@@ -52,9 +52,8 @@ setup() {
 	_setup || return 1
 
 	unset PERIOD_START PERIOD_END RANGE_DATE1 RANGE_DATE2 AUTHOR BRANCH REPO_PATH
-	unset ONLY_MERGES CHECK_GITHUB CHECK_JIRA CHECK_COWORKER SANITIZED_AUTHOR SANITIZED_BRANCH
+	unset CHECK_GITHUB CHECK_JIRA CHECK_COWORKER SANITIZED_AUTHOR SANITIZED_BRANCH
 	print_init
-	COMMIT_SHAS=()
 	COMMITS=()
 	OUTPUT_DIR="${TEST_DIR}/output"
 	export OUTPUT_DIR
@@ -102,25 +101,37 @@ EOF
 @test "main:: fails with missing required arguments" {
 	run "${SCRIPT}"
 	[[ "${status}" -ne 0 ]]
-	echo "${output}" | grep -qE "Missing required arguments|--range or --sha is required"
+	echo "${output}" | grep -q "main:: --range is required"
 }
 
-@test "main:: fails when neither --range nor --sha is provided" {
-	create_worktree_repo "${TEST_DIR}/range_sha_repo"
+@test "main:: fails when --range is not provided" {
+	create_worktree_repo "${TEST_DIR}/range_repo"
 
-	run "${SCRIPT}" -p "${TEST_DIR}/range_sha_repo" -b "master" -a "Test User"
+	run "${SCRIPT}" --repo "${TEST_DIR}/range_repo:master" -a "Test User"
 	[[ "${status}" -ne 0 ]]
-	echo "${output}" | grep -q "main:: --range or --sha is required"
+	echo "${output}" | grep -q "main:: --range is required"
 }
 
-@test "validate_args:: fails with invalid repository path" {
-	run "${SCRIPT}" -p "/nonexistent/path" -b "master" -a "test@example.com" --range "2025-01-01"
+@test "main:: fails when --repo is not provided" {
+	run "${SCRIPT}" -a "Test User" --range "2025-01-01"
+	[[ "${status}" -ne 0 ]]
+	echo "${output}" | grep -q "at least one --repo is required"
+}
+
+@test "main:: rejects removed -p and -b flags" {
+	run "${SCRIPT}" -p "${TEST_DIR}/repo" -b "master" -a "Test User" --range "2025-01-01"
+	[[ "${status}" -ne 0 ]]
+	echo "${output}" | grep -q "Unknown option"
+}
+
+@test "validate_repo:: fails with invalid repository path" {
+	run "${SCRIPT}" --repo "/nonexistent/path:master" -a "test@example.com" --range "2025-01-01"
 	[[ "${status}" -ne 0 ]]
 	echo "${output}" | grep -q "Invalid repository path"
 }
 
 @test "main:: fails when using --range option twice" {
-	run "${SCRIPT}" -p "/tmp" -b "master" -a "test@example.com" --range "2025-01-01" --range "2025-06-01"
+	run "${SCRIPT}" --repo "/tmp:master" -a "test@example.com" --range "2025-01-01" --range "2025-06-01"
 	[[ "${status}" -ne 0 ]]
 	echo "${output}" | grep -q "main:: --range option can only be used once"
 }
@@ -251,7 +262,7 @@ EOF
 @test "determine_period_dates:: fails with invalid date format in --range" {
 	create_worktree_repo "${TEST_DIR}/date_test_repo"
 
-	run "${SCRIPT}" -p "${TEST_DIR}/date_test_repo" -b "master" -a "Test User" --range "invalid-date" --tools coworker
+	run "${SCRIPT}" --repo "${TEST_DIR}/date_test_repo:master" -a "Test User" --range "invalid-date" --tools coworker
 	[[ "${status}" -ne 0 ]]
 	echo "${output}" | grep -q "determine_period_dates:: Failed to parse"
 }
@@ -358,6 +369,22 @@ EOF
 	echo "${output}" | grep -q "author or branch is not set"
 }
 
+# apply_repo
+@test "apply_repo:: splits on last colon" {
+	apply_repo "/Volumes/My:Drive/repo:main"
+	[[ "${REPO_PATH}" == "/Volumes/My:Drive/repo" ]]
+	[[ "${BRANCH}" == "main" ]]
+}
+
+@test "apply_repo:: resolves TELLME_REPOS_ROOT" {
+	TELLME_REPOS_ROOT="${TEST_DIR}/repos-root"
+	mkdir -p "${TELLME_REPOS_ROOT}/repo-a"
+
+	apply_repo "repo-a:master"
+	[[ "${REPO_PATH}" == "${TELLME_REPOS_ROOT}/repo-a" ]]
+	[[ "${BRANCH}" == "master" ]]
+}
+
 # get_commits
 @test "get_commits:: selects commits by author" {
 	create_analyzer_repo "${TEST_DIR}/repo"
@@ -371,41 +398,6 @@ EOF
 	[[ "${#COMMITS[@]}" -eq 1 ]]
 }
 
-@test "get_commits:: --sha resolves short hashes" {
-	create_analyzer_repo "${TEST_DIR}/repo"
-	REPO_PATH="${TEST_DIR}/repo"
-	BRANCH="master"
-	AUTHOR="Author One"
-	local sha
-	sha=$(git -C "${TEST_DIR}/repo" rev-parse HEAD)
-	COMMIT_SHAS=("${sha}")
-
-	get_commits
-	[[ "${#COMMITS[@]}" -eq 1 ]]
-}
-
-@test "get_commits:: --only-merges includes merge commits matching author in subject" {
-	create_analyzer_repo "${TEST_DIR}/repo"
-	cd "${TEST_DIR}/repo"
-	git checkout master >/dev/null 2>&1
-	git checkout -b feature-author-one >/dev/null 2>&1
-	echo "merge change" >>test.txt
-	git add test.txt
-	git commit -m "feature work" >/dev/null 2>&1
-	git checkout master >/dev/null 2>&1
-	git merge --no-ff feature-author-one -m "Merge branch 'feature-author-one' of Author One" >/dev/null 2>&1
-
-	REPO_PATH="${TEST_DIR}/repo"
-	BRANCH="master"
-	AUTHOR="Author One"
-	ONLY_MERGES="true"
-	PERIOD_START="2020-01-01"
-	PERIOD_END="2030-12-31"
-
-	get_commits
-	[[ "${#COMMITS[@]}" -ge 1 ]]
-}
-
 ########################################################
 # Integration Tests
 ########################################################
@@ -413,7 +405,7 @@ EOF
 @test "integration:: basic commit analysis works" {
 	create_analyzer_repo "${TEST_DIR}/repo"
 
-	run "${SCRIPT}" -p "${TEST_DIR}/repo" -b "master" -a "Author One" --range "2020-01-01" --tools coworker
+	run "${SCRIPT}" --repo "${TEST_DIR}/repo:master" -a "Author One" --range "2020-01-01" --tools coworker
 
 	if [[ "${status}" -ne 0 ]]; then
 		echo "Script failed: ${output}" >&3
@@ -436,7 +428,7 @@ EOF
 @test "integration:: handles time range parameter" {
 	create_analyzer_repo "${TEST_DIR}/repo"
 
-	run "${SCRIPT}" -p "${TEST_DIR}/repo" -b "master" -a "Author One" --range "2020-01-01" --tools coworker
+	run "${SCRIPT}" --repo "${TEST_DIR}/repo:master" -a "Author One" --range "2020-01-01" --tools coworker
 
 	[[ "${status}" -eq 0 ]]
 	echo "${output}" | grep -q "Commit:"
@@ -445,7 +437,7 @@ EOF
 @test "integration:: handles different branch" {
 	create_analyzer_repo "${TEST_DIR}/repo"
 
-	run "${SCRIPT}" -p "${TEST_DIR}/repo" -b "test-branch" -a "Test User" --range "2020-01-01" --tools coworker
+	run "${SCRIPT}" --repo "${TEST_DIR}/repo:test-branch" -a "Test User" --range "2020-01-01" --tools coworker
 
 	[[ "${status}" -eq 0 ]]
 	echo "${output}" | grep -q "Commit:"
@@ -454,7 +446,7 @@ EOF
 @test "integration:: handles author not found" {
 	create_analyzer_repo "${TEST_DIR}/repo"
 
-	run "${SCRIPT}" -p "${TEST_DIR}/repo" -b "master" -a "NonExistent Author" --range "2020-01-01" --tools coworker
+	run "${SCRIPT}" --repo "${TEST_DIR}/repo:master" -a "NonExistent Author" --range "2020-01-01" --tools coworker
 
 	[[ "${status}" -ne 0 ]]
 	echo "${output}" | grep -q "not found in the commit history"
@@ -463,7 +455,7 @@ EOF
 @test "integration:: output includes commit details and diffs" {
 	create_analyzer_repo "${TEST_DIR}/repo"
 
-	run "${SCRIPT}" -p "${TEST_DIR}/repo" -b "master" -a "Author One" --range "2020-01-01" --tools coworker
+	run "${SCRIPT}" --repo "${TEST_DIR}/repo:master" -a "Author One" --range "2020-01-01" --tools coworker
 
 	[[ "${status}" -eq 0 ]]
 
@@ -482,7 +474,7 @@ EOF
 @test "integration:: --range flag works with date range" {
 	create_analyzer_repo "${TEST_DIR}/repo"
 
-	run "${SCRIPT}" -p "${TEST_DIR}/repo" -b "master" -a "Author One" --range "2020-01-01" "2030-12-31" --tools coworker
+	run "${SCRIPT}" --repo "${TEST_DIR}/repo:master" -a "Author One" --range "2020-01-01" "2030-12-31" --tools coworker
 
 	[[ "${status}" -eq 0 ]]
 	echo "${output}" | grep -q "Commit:"
@@ -502,7 +494,7 @@ EOF
 @test "integration:: --range flag works with single date" {
 	create_analyzer_repo "${TEST_DIR}/repo"
 
-	run "${SCRIPT}" -p "${TEST_DIR}/repo" -b "master" -a "Author One" --range "2020-01-01" --tools coworker
+	run "${SCRIPT}" --repo "${TEST_DIR}/repo:master" -a "Author One" --range "2020-01-01" --tools coworker
 
 	[[ "${status}" -eq 0 ]]
 	echo "${output}" | grep -q "Commit:"
@@ -511,7 +503,7 @@ EOF
 @test "integration:: --range flag filters commits correctly" {
 	create_analyzer_repo "${TEST_DIR}/repo"
 
-	run "${SCRIPT}" -p "${TEST_DIR}/repo" -b "master" -a "Author One" --range "2000-01-01" "2001-12-31" --tools coworker
+	run "${SCRIPT}" --repo "${TEST_DIR}/repo:master" -a "Author One" --range "2000-01-01" "2001-12-31" --tools coworker
 
 	[[ "${status}" -eq 0 ]]
 	echo "${output}" | grep -q "No commits found"
@@ -529,7 +521,7 @@ EOF
 			git commit --author="Author One <author1@example.com>" -m "Feature commit" >/dev/null 2>&1
 	)
 
-	run "${SCRIPT}" -p "${TEST_DIR}/repo" -b "feature/my-feature" -a "Author One" --range "2020-01-01" --tools coworker
+	run "${SCRIPT}" --repo "${TEST_DIR}/repo:feature/my-feature" -a "Author One" --range "2020-01-01" --tools coworker
 
 	[[ "${status}" -eq 0 ]]
 
@@ -537,16 +529,37 @@ EOF
 	[[ -d "${output_dir}" ]]
 }
 
-@test "integration:: --sha analyzes a specific commit" {
-	create_analyzer_repo "${TEST_DIR}/repo"
-	local sha
-	sha=$(git -C "${TEST_DIR}/repo" log --author="Author One" --format=%H -n 1)
+@test "integration:: --repo analyzes multiple repositories" {
+	create_analyzer_repo "${TEST_DIR}/repo-one"
+	create_analyzer_repo "${TEST_DIR}/repo-two"
 
-	run "${SCRIPT}" -p "${TEST_DIR}/repo" -b "master" -a "Author One" --sha "${sha}" --tools coworker
+	run "${SCRIPT}" \
+		--repo "${TEST_DIR}/repo-one:master" \
+		--repo "${TEST_DIR}/repo-two:master" \
+		-a "Author One" \
+		--range "2020-01-01" \
+		--tools coworker
 
 	[[ "${status}" -eq 0 ]]
-	echo "${output}" | grep -q "Commit:"
-	grep -q "Commit by author1" "${OUTPUT_DIR}/repo/master/author_one/"*/diff.txt
+	echo "${output}" | grep -q "=== ${TEST_DIR}/repo-one:master ==="
+	echo "${output}" | grep -q "=== ${TEST_DIR}/repo-two:master ==="
+	grep -q "Commit by author1" "${OUTPUT_DIR}/repo-one/master/author_one/"*/diff.txt
+	grep -q "Commit by author1" "${OUTPUT_DIR}/repo-two/master/author_one/"*/diff.txt
+}
+
+@test "integration:: continues after one repo fails" {
+	create_analyzer_repo "${TEST_DIR}/repo-two"
+
+	run "${SCRIPT}" \
+		--repo "/nonexistent/path:master" \
+		--repo "${TEST_DIR}/repo-two:master" \
+		-a "Author One" \
+		--range "2020-01-01" \
+		--tools coworker
+
+	[[ "${status}" -ne 0 ]]
+	echo "${output}" | grep -q "Invalid repository path"
+	grep -q "Commit by author1" "${OUTPUT_DIR}/repo-two/master/author_one/"*/diff.txt
 }
 
 @test "process_commits:: invokes github write helpers" {
@@ -632,20 +645,8 @@ EOF
 	echo "${output}" | grep -q "Child:.*weekly-update"
 	echo "${output}" | grep -q "one-one-one"
 	echo "${output}" | grep -q "brag-book"
+	echo "${output}" | grep -q "monthly-update"
 	[[ -d "${OUTPUT_PATH}/meetings" ]]
-}
-
-@test "determine_period_from_shas:: derives window from commit author dates" {
-	create_analyzer_repo "${TEST_DIR}/repo"
-	REPO_PATH="${TEST_DIR}/repo"
-	local sha
-	sha=$(git -C "${TEST_DIR}/repo" log --author="Author One" --format=%H -n 1)
-	COMMIT_SHAS=("${sha}")
-
-	determine_period_from_shas
-	[[ -n "${PERIOD_START}" ]]
-	[[ -n "${PERIOD_END}" ]]
-	[[ "${PERIOD_START}" == "${PERIOD_END}" ]]
 }
 
 @test "set_default_author:: keeps an explicit AUTHOR" {
@@ -658,7 +659,7 @@ EOF
 	create_analyzer_repo "${TEST_DIR}/repo"
 	REPO_PATH="${TEST_DIR}/repo"
 	AUTHOR="Author One"
-	COMMIT_SHAS=()
+	COMMITS=()
 
 	validate_repo
 	[[ "${REPO_NAME}" == "repo" ]]

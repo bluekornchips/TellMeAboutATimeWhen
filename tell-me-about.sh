@@ -15,10 +15,9 @@ DEFAULT_OUTPUT_DIR="tellme"
 # - 0 always
 usage() {
 	cat <<EOF
-Usage: $(basename "$0") -p|--path <path> -b|--branch <branch>
+Usage: $(basename "$0") [--repo <path>:<branch> ...]
        [-a|--author <author>]
        [--range <date> | --range <start_date> <end_date>]
-       [--sha <commit> ...] [--only-merges]
        [--tools <jira,github,coworker>]
 
 Analyze git commits by author and save detailed information to
@@ -33,18 +32,16 @@ All tools are enabled by default. Use --tools with a comma-separated
 list to select a subset.
 
 Options:
-  -p, --path <path>        : Path to the repository, required
-  -b, --branch <branch>    : Branch to analyze, required
+  --repo <path>:<branch>   : Repository path and branch, repeatable
   -a, --author <author>    : Author of commits, defaults to git global user.name or user.email
   --range <date>           : Analyze commits since date, or between two dates
-  --sha <commit>           : Analyze specific commit by SHA, can be used multiple times
-  --only-merges            : Only include merge commits with subjects matching author
   --tools <tools>          : Comma-separated subset of jira,github,coworker
   -h, --help               : Show this help message
 
-Either --range or --sha must be specified. The coworker tool uses
---range dates, or derives a window from --sha author dates. Project
+--range is required. The coworker tool uses --range dates. Project
 skills then call Coworker MCP calendar_search and transcript_by_id.
+
+Relative paths in --repo resolve against TELLME_REPOS_ROOT when set.
 
 EOF
 
@@ -142,36 +139,6 @@ validate_enabled_tools() {
 	return 0
 }
 
-# Validates required script arguments
-#
-# Returns:
-# - 0 on success
-# - 1 on validation failure
-validate_args() {
-	if [[ -z "${REPO_PATH}" ]]; then
-		echo "validate_args:: REPO_PATH is not set" >&2
-		return 1
-	fi
-
-	if [[ -z "${BRANCH}" ]]; then
-		echo "validate_args:: BRANCH is not set" >&2
-		return 1
-	fi
-
-	if [[ -z "${AUTHOR}" ]]; then
-		echo "validate_args:: Missing required arguments" >&2
-		usage >&2
-		return 1
-	fi
-
-	if [[ ! -d "${REPO_PATH}" ]]; then
-		echo "validate_args:: Invalid repository path: ${REPO_PATH}" >&2
-		return 1
-	fi
-
-	return 0
-}
-
 # Sets AUTHOR from git global config when missing
 #
 # Side Effects:
@@ -208,7 +175,7 @@ set_default_author() {
 	return 0
 }
 
-# Validates git repository, author, and optional explicit SHAs
+# Validates git repository and author
 #
 # Side Effects:
 # - Sets REPO_NAME
@@ -219,10 +186,14 @@ set_default_author() {
 validate_repo() {
 	local toplevel
 	local author_output
-	local sha
 
 	if [[ -z "${REPO_PATH}" || -z "${AUTHOR}" ]]; then
 		echo "validate_repo:: REPO_PATH or AUTHOR is not set" >&2
+		return 1
+	fi
+
+	if [[ ! -d "${REPO_PATH}" ]]; then
+		echo "validate_repo:: Invalid repository path: ${REPO_PATH}" >&2
 		return 1
 	fi
 
@@ -238,15 +209,6 @@ validate_repo() {
 	if [[ -z "${author_output}" ]]; then
 		echo "validate_repo:: Author '${AUTHOR}' not found in the commit history" >&2
 		return 1
-	fi
-
-	if [[ ${#COMMIT_SHAS[@]} -gt 0 ]]; then
-		for sha in "${COMMIT_SHAS[@]}"; do
-			if ! git_cmd rev-parse "${sha}" >/dev/null 2>&1; then
-				echo "validate_repo:: Commit '${sha}' not found in git history" >&2
-				return 1
-			fi
-		done
 	fi
 
 	return 0
@@ -363,6 +325,91 @@ process_meetings() {
 	return 0
 }
 
+# Sets REPO_PATH and BRANCH from a path:branch repo value
+#
+# Inputs:
+# - $1: repo value in path:branch form
+#
+# Side Effects:
+# - Sets REPO_PATH and BRANCH
+#
+# Returns:
+# - 0 on success
+# - 1 on validation failure
+apply_repo() {
+	local spec="${1:-}"
+	local repos_root="${TELLME_REPOS_ROOT:-}"
+
+	REPO_PATH=""
+	BRANCH=""
+
+	if [[ -z "${spec}" ]]; then
+		echo "apply_repo:: repo is required" >&2
+		return 1
+	fi
+
+	if [[ "${spec}" != *:* ]]; then
+		echo "apply_repo:: Invalid repo '${spec}', expected path:branch" >&2
+		return 1
+	fi
+
+	REPO_PATH="${spec%:*}"
+	BRANCH="${spec##*:}"
+
+	if [[ -z "${REPO_PATH}" || -z "${BRANCH}" ]]; then
+		echo "apply_repo:: Invalid repo '${spec}', expected path:branch" >&2
+		return 1
+	fi
+
+	if [[ "${REPO_PATH}" != /* && -n "${repos_root}" ]]; then
+		REPO_PATH="${repos_root%/}/${REPO_PATH}"
+	fi
+
+	return 0
+}
+
+# Processes one repository through validation, commit export, and meetings stub
+#
+# Inputs:
+# - $1: repo value in path:branch form
+#
+# Side Effects:
+# - Sets REPO_PATH, BRANCH, REPO_NAME, COMMITS, OUTPUT_PATH, and sanitized names
+# - Creates commit and meeting output directories
+#
+# Returns:
+# - 0 on success
+# - 1 on failure
+process_repo() {
+	local spec="${1:-}"
+
+	COMMITS=()
+
+	apply_repo "${spec}" || return 1
+	validate_repo || return 1
+	get_commits || return 1
+
+	if ! sanitize_names "${AUTHOR}" "${BRANCH}"; then
+		echo "process_repo:: Failed to sanitize names" >&2
+		return 1
+	fi
+
+	OUTPUT_PATH="${OUTPUT_DIR}/${REPO_NAME}/${SANITIZED_BRANCH}/${SANITIZED_AUTHOR}"
+
+	if ! mkdir -p "${OUTPUT_PATH}" 2>/dev/null; then
+		echo "process_repo:: Failed to create output directory: ${OUTPUT_PATH}" >&2
+		return 1
+	fi
+
+	process_commits || return 1
+
+	if [[ "${CHECK_COWORKER}" == "true" ]]; then
+		process_meetings || return 1
+	fi
+
+	return 0
+}
+
 # Loads shared print, git, util, commits, and tool libraries relative to this script
 #
 # Side Effects:
@@ -411,11 +458,13 @@ _setup() {
 
 main() {
 	local tools=""
+	local spec=""
+	local failed=0
 
 	_setup || return 1
 
-	COMMIT_SHAS=()
 	COMMITS=()
+	REPOS=()
 
 	while [[ $# -gt 0 ]]; do
 		case "$1" in
@@ -423,23 +472,11 @@ main() {
 			usage
 			return 0
 			;;
-		-p | --path)
-			REPO_PATH="$2"
-			shift 2
-			;;
-		-b | --branch)
-			BRANCH="$2"
-			shift 2
-			;;
 		-a | --author)
 			AUTHOR="$2"
 			shift 2
 			;;
 		--range)
-			if [[ ${#COMMIT_SHAS[@]} -gt 0 ]]; then
-				echo "main:: --range cannot be used with --sha" >&2
-				return 1
-			fi
 			if [[ -n "${RANGE_DATE1}" ]]; then
 				echo "main:: --range option can only be used once" >&2
 				return 1
@@ -451,28 +488,20 @@ main() {
 				shift 1
 			fi
 			;;
-		--sha)
-			if [[ -n "${RANGE_DATE1}" ]]; then
-				echo "main:: --sha cannot be used with --range" >&2
-				return 1
-			fi
-			if [[ -z "$2" ]]; then
-				echo "main:: --sha requires a commit hash" >&2
-				return 1
-			fi
-			COMMIT_SHAS+=("$2")
-			shift 2
-			;;
-		--only-merges)
-			ONLY_MERGES=true
-			shift
-			;;
 		--tools)
 			if [[ -z "${2:-}" || "$2" == -* ]]; then
 				echo "main:: --tools requires a comma-separated list of jira,github,coworker" >&2
 				return 1
 			fi
 			tools="$2"
+			shift 2
+			;;
+		--repo)
+			if [[ -z "${2:-}" || "$2" == -* ]]; then
+				echo "main:: --repo requires path:branch" >&2
+				return 1
+			fi
+			REPOS+=("$2")
 			shift 2
 			;;
 		*)
@@ -489,41 +518,30 @@ main() {
 		OUTPUT_DIR="${HOME}/${DEFAULT_OUTPUT_DIR}"
 	fi
 
-	if [[ ${#COMMIT_SHAS[@]} -eq 0 && -z "${RANGE_DATE1}" ]]; then
-		echo "main:: --range or --sha is required" >&2
+	if [[ -z "${RANGE_DATE1}" ]]; then
+		echo "main:: --range is required" >&2
 		usage
 		return 1
 	fi
 
+	if [[ ${#REPOS[@]} -eq 0 ]]; then
+		echo "main:: at least one --repo is required" >&2
+		return 1
+	fi
+
 	set_default_author || return 1
-	validate_args || return 1
-	validate_repo || return 1
+	determine_period_dates || return 1
 	validate_enabled_tools || return 1
 
-	if [[ ${#COMMIT_SHAS[@]} -eq 0 ]]; then
-		determine_period_dates || return 1
-	else
-		determine_period_from_shas || return 1
-	fi
+	for spec in "${REPOS[@]}"; do
+		echo "=== ${spec} ==="
+		if ! process_repo "${spec}"; then
+			failed=1
+		fi
+	done
 
-	get_commits || return 1
-
-	if ! sanitize_names "${AUTHOR}" "${BRANCH}"; then
-		echo "main:: Failed to sanitize names" >&2
+	if [[ "${failed}" -ne 0 ]]; then
 		return 1
-	fi
-
-	OUTPUT_PATH="${OUTPUT_DIR}/${REPO_NAME}/${SANITIZED_BRANCH}/${SANITIZED_AUTHOR}"
-
-	if ! mkdir -p "${OUTPUT_PATH}" 2>/dev/null; then
-		echo "main:: Failed to create output directory: ${OUTPUT_PATH}" >&2
-		return 1
-	fi
-
-	process_commits || return 1
-
-	if [[ "${CHECK_COWORKER}" == "true" ]]; then
-		process_meetings || return 1
 	fi
 
 	return 0

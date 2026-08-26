@@ -3,7 +3,7 @@ name: one-one-one
 description: >-
   Child skill that creates a one-page one-on-one review from the shared
   TellMeAboutATimeWhen evidence set. Use when the user asks for a 1:1 update,
-  one-on-one review, or personal weekly review for a manager meeting.
+  one-on-one review, or personal weekly review.
 ---
 
 # One on One

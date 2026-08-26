@@ -164,36 +164,36 @@ mock_acli_success
 	echo "$output" | grep -q "PROJ-123"
 }
 
-@test "extract_jira_tickets:: extracts alphanumeric project keys like B2B" {
+@test "extract_jira_tickets:: extracts alphanumeric project keys like TEAM" {
 	local test_repo="${TEST_DIR}/test_repo"
 	local commit
 	create_worktree_repo "$test_repo"
 	echo "test" >file.txt
 	git add file.txt
-	git commit -m "B2B-456: Platform work" >/dev/null 2>&1
+	git commit -m "TEAM-456: Platform work" >/dev/null 2>&1
 
 	commit=$(git rev-parse HEAD)
 	REPO_PATH=""
 
 	run extract_jira_tickets "$commit"
 	[[ "$status" -eq 0 ]]
-	echo "$output" | grep -q "B2B-456"
+	echo "$output" | grep -q "TEAM-456"
 }
 
-@test "extract_jira_tickets:: extracts B2B keys from merge commit branch names" {
+@test "extract_jira_tickets:: extracts alphanumeric keys from merge commit branch names" {
 	local test_repo="${TEST_DIR}/test_repo"
 	local commit
 	create_worktree_repo "$test_repo"
 	echo "test" >file.txt
 	git add file.txt
-	git commit -m "Merge pull request #12 from org/feature/B2B-789-login" >/dev/null 2>&1
+	git commit -m "Merge pull request #12 from org/feature/TEAM-789-login" >/dev/null 2>&1
 
 	commit=$(git rev-parse HEAD)
 	REPO_PATH=""
 
 	run extract_jira_tickets "$commit"
 	[[ "$status" -eq 0 ]]
-	echo "$output" | grep -q "B2B-789"
+	echo "$output" | grep -q "TEAM-789"
 }
 
 @test "extract_jira_tickets:: extracts multiple unique ticket IDs" {

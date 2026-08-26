@@ -10,6 +10,43 @@
 # when set, otherwise they build a fresh repo for backward compatibility.
 #
 
+# Refuses paths outside allowed temp directories
+#
+# Inputs:
+# - $1: path to check
+# - $2: caller name for error messages
+#
+# Returns:
+# - 0 when path is under an allowed temp root
+# - 1 when path is outside allowed temp roots
+assert_path_under_tmp() {
+	local path="$1"
+	local caller="${2:-assert_path_under_tmp}"
+	local tmp_root
+
+	if [[ -z "${path}" ]]; then
+		echo "${caller}:: path is required" >&2
+		return 1
+	fi
+
+	tmp_root="${BATS_FILE_TMPDIR:-${BATS_TEST_TMPDIR:-${TMPDIR:-/tmp}}}"
+
+	if [[ "${path}" == "${tmp_root}/"* ]]; then
+		return 0
+	fi
+
+	if [[ -n "${BATS_TEST_TMPDIR:-}" && "${path}" == "${BATS_TEST_TMPDIR}/"* ]]; then
+		return 0
+	fi
+
+	if [[ "${path}" == "/tmp/"* ]]; then
+		return 0
+	fi
+
+	echo "${caller}:: refusing to remove path outside of tmp: ${path}" >&2
+	return 1
+}
+
 # Copies a fixture repo into dest and cds into it
 #
 # Inputs:
@@ -22,7 +59,6 @@
 clone_fixture_repo() {
 	local source_repo="$1"
 	local dest_repo="$2"
-	local tmp_root
 
 	if [[ -z "${source_repo}" || -z "${dest_repo}" ]]; then
 		echo "clone_fixture_repo:: source and dest are required" >&2
@@ -34,11 +70,7 @@ clone_fixture_repo() {
 		return 1
 	fi
 
-	tmp_root="${BATS_FILE_TMPDIR:-${BATS_TEST_TMPDIR:-${TMPDIR:-/tmp}}}"
-	if [[ "${dest_repo}" != "${tmp_root}/"* && "${dest_repo}" != "/tmp/"* ]]; then
-		echo "clone_fixture_repo:: refusing to remove path outside of tmp: ${dest_repo}" >&2
-		return 1
-	fi
+	assert_path_under_tmp "${dest_repo}" "clone_fixture_repo" || return 1
 
 	rm -rf "${dest_repo}"
 	mkdir -p "$(dirname "${dest_repo}")"
@@ -65,18 +97,13 @@ clone_fixture_repo() {
 # - 1 on failure
 create_seed_repo() {
 	local repo_dir="$1"
-	local tmp_root
 
 	if [[ -z "${repo_dir}" ]]; then
 		echo "create_seed_repo:: repo_dir is required" >&2
 		return 1
 	fi
 
-	tmp_root="${BATS_FILE_TMPDIR:-${BATS_TEST_TMPDIR:-${TMPDIR:-/tmp}}}"
-	if [[ "${repo_dir}" != "${tmp_root}/"* && "${repo_dir}" != "/tmp/"* ]]; then
-		echo "create_seed_repo:: refusing to remove path outside of tmp: ${repo_dir}" >&2
-		return 1
-	fi
+	assert_path_under_tmp "${repo_dir}" "create_seed_repo" || return 1
 
 	rm -rf "${repo_dir}"
 	mkdir -p "${repo_dir}"
