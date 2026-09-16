@@ -28,7 +28,7 @@ JSON
 
 	# shellcheck disable=SC1090
 	source "${GIT_ROOT}/tests/helpers/bats-setup.sh"
-	bats_source_libs "$SCRIPT"
+	bats_source_libs "${SCRIPT}"
 
 	return 0
 }
@@ -92,6 +92,6 @@ JSON
 @test "integration:: rejects direct script execution" {
 	# shellcheck disable=SC1090
 	source "${GIT_ROOT}/tests/helpers/bats-setup.sh"
-	run assert_rejects_direct_execution "$SCRIPT"
+	run assert_rejects_direct_execution "${SCRIPT}"
 	[[ "$status" -eq 0 ]]
 }

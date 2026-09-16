@@ -44,9 +44,7 @@ setup() {
 
 	# shellcheck disable=SC1090
 	source "${HELPER}"
-	set +e
 	source "${SCRIPT}" || true
-	set +e
 
 	# Unit tests call helpers without main; load shared libs via _setup.
 	_setup || return 1
@@ -125,9 +123,18 @@ EOF
 }
 
 @test "validate_repo:: fails with invalid repository path" {
-	run "${SCRIPT}" --repo "/nonexistent/path:master" -a "test@example.com" --range "2025-01-01"
-	[[ "${status}" -ne 0 ]]
+	REPO_PATH="/nonexistent/path"
+	AUTHOR="testuser"
+
+	run validate_repo
+	[[ "${status}" -eq 1 ]]
 	echo "${output}" | grep -q "Invalid repository path"
+}
+
+@test "validate_enabled_tools:: rejects a non-username author when github is enabled" {
+	run "${SCRIPT}" --repo "/nonexistent/path:master" -a "Test User" --range "2025-01-01" --tools github
+	[[ "${status}" -ne 0 ]]
+	echo "${output}" | grep -q "is not a GitHub username"
 }
 
 @test "main:: fails when using --range option twice" {
@@ -417,12 +424,10 @@ EOF
 	[[ -d "${output_dir}" ]]
 
 	shopt -s nullglob
-	local commit_dirs=("${output_dir}"/*)
+	local commit_diffs=("${output_dir}"/*/diff.txt)
 	shopt -u nullglob
-	[[ ${#commit_dirs[@]} -eq 1 ]]
-	[[ -d "${commit_dirs[0]}" ]]
-	[[ -f "${commit_dirs[0]}/diff.txt" ]]
-	grep -q "Commit by author1" "${commit_dirs[0]}/diff.txt"
+	[[ ${#commit_diffs[@]} -eq 1 ]]
+	grep -q "Commit by author1" "${commit_diffs[0]}"
 }
 
 @test "integration:: handles time range parameter" {
@@ -463,12 +468,10 @@ EOF
 	[[ -d "${output_dir}" ]]
 
 	shopt -s nullglob
-	local commit_dirs=("${output_dir}"/*)
+	local commit_diffs=("${output_dir}"/*/diff.txt)
 	shopt -u nullglob
-	[[ ${#commit_dirs[@]} -eq 1 ]]
-	[[ -d "${commit_dirs[0]}" ]]
-	[[ -f "${commit_dirs[0]}/diff.txt" ]]
-	grep -q "Commit by author1" "${commit_dirs[0]}/diff.txt"
+	[[ ${#commit_diffs[@]} -eq 1 ]]
+	grep -q "Commit by author1" "${commit_diffs[0]}"
 }
 
 @test "integration:: --range flag works with date range" {
@@ -483,12 +486,10 @@ EOF
 	[[ -d "${output_dir}" ]]
 
 	shopt -s nullglob
-	local commit_dirs=("${output_dir}"/*)
+	local commit_diffs=("${output_dir}"/*/diff.txt)
 	shopt -u nullglob
-	[[ ${#commit_dirs[@]} -eq 1 ]]
-	[[ -d "${commit_dirs[0]}" ]]
-	[[ -f "${commit_dirs[0]}/diff.txt" ]]
-	grep -q "Commit by author1" "${commit_dirs[0]}/diff.txt"
+	[[ ${#commit_diffs[@]} -eq 1 ]]
+	grep -q "Commit by author1" "${commit_diffs[0]}"
 }
 
 @test "integration:: --range flag works with single date" {
@@ -506,7 +507,7 @@ EOF
 	run "${SCRIPT}" --repo "${TEST_DIR}/repo:master" -a "Author One" --range "2000-01-01" "2001-12-31" --tools coworker
 
 	[[ "${status}" -eq 0 ]]
-	echo "${output}" | grep -q "No commits found"
+	echo "${output}" | grep -q "(0 commits)"
 }
 
 @test "integration:: branch name sanitization" {
@@ -541,8 +542,8 @@ EOF
 		--tools coworker
 
 	[[ "${status}" -eq 0 ]]
-	echo "${output}" | grep -q "=== ${TEST_DIR}/repo-one:master ==="
-	echo "${output}" | grep -q "=== ${TEST_DIR}/repo-two:master ==="
+	echo "${output}" | grep -q "=== ${TEST_DIR}/repo-one:master (1 commit) ==="
+	echo "${output}" | grep -q "=== ${TEST_DIR}/repo-two:master (1 commit) ==="
 	grep -q "Commit by author1" "${OUTPUT_DIR}/repo-one/master/author_one/"*/diff.txt
 	grep -q "Commit by author1" "${OUTPUT_DIR}/repo-two/master/author_one/"*/diff.txt
 }
@@ -586,6 +587,105 @@ EOF
 	run process_commits
 	[[ "${status}" -eq 0 ]]
 	[[ -f "${OUTPUT_PATH}/${sha}/pr.json" ]]
+}
+
+@test "process_involvement_prs:: writes indexes and prints per-role counts" {
+	OUTPUT_PATH="${TEST_DIR}/out-prs"
+	mkdir -p "${OUTPUT_PATH}"
+
+	write_involvement_prs() {
+		local root="$1"
+		mkdir -p "${root}/prs/merged" "${root}/prs/reviewed" "${root}/prs/commented"
+		printf '%s\n' '[]' >"${root}/prs/merged/index.json"
+		printf '%s\n' '[{"number":1},{"number":2}]' >"${root}/prs/reviewed/index.json"
+		printf '%s\n' '[{"number":1}]' >"${root}/prs/commented/index.json"
+		return 0
+	}
+
+	run process_involvement_prs
+	[[ "${status}" -eq 0 ]]
+	[[ -f "${OUTPUT_PATH}/prs/merged/index.json" ]]
+	echo "${output}" | grep -q "merged 0, reviewed 2, commented 1"
+	echo "${output}" | grep -q "prs/reviewed/index.json"
+	echo "${output}" | grep -q "prs/commented/index.json"
+}
+
+@test "process_repo:: invokes involvement helper when github enabled" {
+	create_analyzer_repo "${TEST_DIR}/repo"
+	local called_file="${TEST_DIR}/involvement-called"
+	AUTHOR="Author One"
+	BRANCH="master"
+	PERIOD_START="2020-01-01"
+	PERIOD_END="2030-01-01"
+	CHECK_GITHUB="true"
+	CHECK_JIRA="false"
+	CHECK_COWORKER="false"
+
+	write_pr_details() {
+		local commit="$1"
+		local pr_file="$2"
+		printf '%s\n' '[]' >"${pr_file}"
+		return 0
+	}
+	write_involvement_prs() {
+		printf 'called\n' >"${called_file}"
+		mkdir -p "${OUTPUT_PATH}/prs/merged" "${OUTPUT_PATH}/prs/reviewed" "${OUTPUT_PATH}/prs/commented"
+		printf '%s\n' '[]' >"${OUTPUT_PATH}/prs/merged/index.json"
+		printf '%s\n' '[]' >"${OUTPUT_PATH}/prs/reviewed/index.json"
+		printf '%s\n' '[]' >"${OUTPUT_PATH}/prs/commented/index.json"
+		return 0
+	}
+
+	run process_repo "${TEST_DIR}/repo:master"
+	[[ "${status}" -eq 0 ]]
+	[[ -f "${called_file}" ]]
+}
+
+@test "process_repo:: skips involvement helper when github disabled" {
+	create_analyzer_repo "${TEST_DIR}/repo"
+	local called_file="${TEST_DIR}/involvement-skipped"
+	AUTHOR="Author One"
+	BRANCH="master"
+	PERIOD_START="2020-01-01"
+	PERIOD_END="2030-01-01"
+	CHECK_GITHUB="false"
+	CHECK_JIRA="false"
+	CHECK_COWORKER="false"
+
+	write_involvement_prs() {
+		printf 'called\n' >"${called_file}"
+		return 0
+	}
+
+	run process_repo "${TEST_DIR}/repo:master"
+	[[ "${status}" -eq 0 ]]
+	[[ ! -f "${called_file}" ]]
+}
+
+@test "process_repo:: invokes involvement helper when commit list is empty" {
+	create_analyzer_repo "${TEST_DIR}/repo"
+	local called_file="${TEST_DIR}/involvement-empty-commits"
+	AUTHOR="Author One"
+	BRANCH="master"
+	PERIOD_START="2099-01-01"
+	PERIOD_END="2099-01-02"
+	CHECK_GITHUB="true"
+	CHECK_JIRA="false"
+	CHECK_COWORKER="false"
+
+	write_involvement_prs() {
+		printf 'called\n' >"${called_file}"
+		mkdir -p "${OUTPUT_PATH}/prs/merged" "${OUTPUT_PATH}/prs/reviewed" "${OUTPUT_PATH}/prs/commented"
+		printf '%s\n' '[]' >"${OUTPUT_PATH}/prs/merged/index.json"
+		printf '%s\n' '[]' >"${OUTPUT_PATH}/prs/reviewed/index.json"
+		printf '%s\n' '[]' >"${OUTPUT_PATH}/prs/commented/index.json"
+		return 0
+	}
+
+	run process_repo "${TEST_DIR}/repo:master"
+	[[ "${status}" -eq 0 ]]
+	[[ -f "${called_file}" ]]
+	echo "${output}" | grep -q "(0 commits)"
 }
 
 @test "process_commits:: invokes jira write helpers" {
@@ -683,8 +783,8 @@ EOF
 @test "write_commit_details:: writes message and files when missing" {
 	create_analyzer_repo "${TEST_DIR}/repo"
 	REPO_PATH="${TEST_DIR}/repo"
-	local sha
 	local out_file="${TEST_DIR}/diff.txt"
+	local sha
 	sha=$(git -C "${TEST_DIR}/repo" log --author="Author One" --format=%H -n 1)
 
 	write_commit_details "${sha}" "${out_file}"

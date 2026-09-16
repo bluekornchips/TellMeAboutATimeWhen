@@ -22,26 +22,17 @@
 assert_path_under_tmp() {
 	local path="$1"
 	local caller="${2:-assert_path_under_tmp}"
-	local tmp_root
 
 	if [[ -z "${path}" ]]; then
 		echo "${caller}:: path is required" >&2
 		return 1
 	fi
 
-	tmp_root="${BATS_FILE_TMPDIR:-${BATS_TEST_TMPDIR:-${TMPDIR:-/tmp}}}"
+	local tmp_root="${BATS_FILE_TMPDIR:-${BATS_TEST_TMPDIR:-${TMPDIR:-/tmp}}}"
 
-	if [[ "${path}" == "${tmp_root}/"* ]]; then
-		return 0
-	fi
-
-	if [[ -n "${BATS_TEST_TMPDIR:-}" && "${path}" == "${BATS_TEST_TMPDIR}/"* ]]; then
-		return 0
-	fi
-
-	if [[ "${path}" == "/tmp/"* ]]; then
-		return 0
-	fi
+	[[ "${path}" == "${tmp_root}/"* ]] && return 0
+	[[ -n "${BATS_TEST_TMPDIR:-}" && "${path}" == "${BATS_TEST_TMPDIR}/"* ]] && return 0
+	[[ "${path}" == "/tmp/"* ]] && return 0
 
 	echo "${caller}:: refusing to remove path outside of tmp: ${path}" >&2
 	return 1
@@ -152,7 +143,6 @@ create_worktree_repo() {
 # - 1 on failure
 build_analyzer_repo() {
 	local repo_dir="$1"
-	local default_branch
 
 	create_seed_repo "${repo_dir}" || return 1
 
@@ -160,6 +150,7 @@ build_analyzer_repo() {
 	git -C "${repo_dir}" add test.txt
 	git -C "${repo_dir}" commit -m "Initial commit" >/dev/null 2>&1
 
+	local default_branch
 	default_branch=$(git -C "${repo_dir}" symbolic-ref --short HEAD 2>/dev/null || echo "master")
 	if [[ "${default_branch}" != "master" ]]; then
 		git -C "${repo_dir}" branch -m master >/dev/null 2>&1 || true
@@ -219,11 +210,8 @@ create_analyzer_repo() {
 # - 0 on success
 # - 1 on failure
 init_shared_fixtures() {
-	local fixture_root
-	local previous_cwd
-
-	previous_cwd="${PWD}"
-	fixture_root="${BATS_FILE_TMPDIR:-${TMPDIR:-/tmp}}/tellme-fixtures"
+	local previous_cwd="${PWD}"
+	local fixture_root="${BATS_FILE_TMPDIR:-${TMPDIR:-/tmp}}/tellme-fixtures"
 	mkdir -p "${fixture_root}"
 
 	SHARED_SEED_REPO=""

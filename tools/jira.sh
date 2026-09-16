@@ -49,14 +49,13 @@ EOF
 # - 1 on failure
 get_ticket_details_for_id() {
 	local ticket_id="$1"
-	local ticket_output
-	local comments_output
 
 	if [[ -z "${ticket_id}" ]]; then
 		echo "get_ticket_details_for_id:: ticket_id is not set" >&2
 		return 1
 	fi
 
+	local ticket_output
 	if ! ticket_output=$(acli jira workitem view "${ticket_id}" 2>/dev/null); then
 		echo "get_ticket_details_for_id:: Failed to retrieve ticket details for: ${ticket_id}" >&2
 		return 1
@@ -64,6 +63,7 @@ get_ticket_details_for_id() {
 
 	echo "${ticket_output}"
 
+	local comments_output
 	if comments_output=$(acli jira workitem comment list --key "${ticket_id}" 2>/dev/null); then
 		if [[ -n "${comments_output}" ]]; then
 			echo "${comments_output}"
@@ -88,20 +88,20 @@ get_ticket_details_for_id() {
 # - 1 on failure
 extract_jira_tickets() {
 	local commit="${1:-}"
-	local commit_message
-	local ticket_ids=()
-	local ticket_id
 
 	if [[ -z "${commit}" ]]; then
 		echo "extract_jira_tickets:: commit is not set" >&2
 		return 1
 	fi
 
+	local commit_message
 	if ! commit_message=$(git_cmd log -1 --format="%B" "${commit}" 2>/dev/null); then
 		echo "extract_jira_tickets:: Failed to get commit message for ${commit}" >&2
 		return 1
 	fi
 
+	local ticket_ids=()
+	local ticket_id
 	while [[ "${commit_message}" =~ ([A-Z][A-Z0-9]*-[0-9]+) ]]; do
 		ticket_id="${BASH_REMATCH[1]}"
 		if ! array_contains "${ticket_id}" "${ticket_ids[@]}"; then
@@ -128,9 +128,7 @@ extract_jira_tickets() {
 needs_jira_refresh() {
 	local jira_file="${1:-}"
 
-	if [[ -z "${jira_file}" || ! -s "${jira_file}" ]]; then
-		return 0
-	fi
+	[[ -z "${jira_file}" || ! -s "${jira_file}" ]] && return 0
 
 	return 1
 }
@@ -151,16 +149,13 @@ needs_jira_refresh() {
 write_jira_details() {
 	local commit="${1:-}"
 	local jira_file="${2:-}"
-	local commit_dir
-	local ticket_ids
-	local ticket_id
-	local wrote=0
 
 	if [[ -z "${commit}" || -z "${jira_file}" ]]; then
 		echo "write_jira_details:: commit or jira_file is not set" >&2
 		return 1
 	fi
 
+	local commit_dir
 	commit_dir=$(dirname "${jira_file}")
 	if [[ ! -d "${commit_dir}" ]]; then
 		echo "write_jira_details:: Commit directory does not exist: ${commit_dir}" >&2
@@ -169,6 +164,8 @@ write_jira_details() {
 
 	check_jira_dependencies || return 1
 	validate_jira_auth || return 1
+
+	local ticket_ids
 	ticket_ids=$(extract_jira_tickets "${commit}" 2>/dev/null) || return 1
 
 	if [[ -n "${ticket_ids}" ]]; then
@@ -177,6 +174,8 @@ write_jira_details() {
 			return 1
 		fi
 
+		local ticket_id
+		local wrote=0
 		while IFS= read -r ticket_id; do
 			if [[ -n "${ticket_id}" ]]; then
 				if get_ticket_details_for_id "${ticket_id}" >>"${jira_file}"; then

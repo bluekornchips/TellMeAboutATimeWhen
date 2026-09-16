@@ -4,9 +4,7 @@
 # Colors, section separators, and labeled fields only.
 #
 
-if declare -F print_init >/dev/null 2>&1; then
-	return 0
-fi
+declare -F print_init >/dev/null 2>&1 && return 0
 
 COLOR_RESET=""
 COLOR_BOLD=""
@@ -43,7 +41,6 @@ print_init() {
 # - 0 always
 print_section() {
 	local width="${COLUMNS:-80}"
-	local i
 
 	if ! [[ "${width}" =~ ^[0-9]+$ ]]; then
 		width=80
@@ -55,6 +52,8 @@ print_section() {
 
 	printf '\n'
 	printf '%s' "${COLOR_SEPARATOR}"
+
+	local i
 	for ((i = 0; i < width; i++)); do
 		printf '-'
 	done
@@ -79,20 +78,17 @@ print_field() {
 	local label="${1:-}"
 	local value="${2:-}"
 	local role="${3:-default}"
-	local color=""
-	local padded_label
 
-	if [[ -z "${label}" ]]; then
-		return 0
-	fi
+	[[ -z "${label}" ]] && return 0
 
+	local color="${COLOR_PATH}"
 	case "${role}" in
 	commit) color="${COLOR_COMMIT}${COLOR_BOLD}" ;;
 	jira) color="${COLOR_JIRA}" ;;
 	github) color="${COLOR_GITHUB}" ;;
-	*) color="${COLOR_PATH}" ;;
 	esac
 
+	local padded_label
 	padded_label=$(printf '%-8s' "${label}:")
 	printf '%s%s%s %s%s%s\n' \
 		"${COLOR_LABEL}" "${padded_label}" "${COLOR_RESET}" \

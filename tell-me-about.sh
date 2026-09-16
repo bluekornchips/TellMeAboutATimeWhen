@@ -28,6 +28,9 @@ Each commit is saved to: OUTPUT_DIR/REPO_NAME/BRANCH/AUTHOR/SHORT_COMMIT/
   - diff.txt : Commit message and changed files
   - jira.txt : JIRA ticket details when the jira tool is enabled
 
+When github is enabled, involvement PRs are also written to:
+  OUTPUT_DIR/REPO_NAME/BRANCH/AUTHOR/prs/{merged,reviewed,commented}/index.json
+
 All tools are enabled by default. Use --tools with a comma-separated
 list to select a subset.
 
@@ -61,9 +64,6 @@ EOF
 # - 1 when a tool name or list format is invalid
 configure_tools() {
 	local tools="${1:-jira,github,coworker}"
-	local tool
-	local tools_array
-	local IFS=','
 
 	CHECK_GITHUB="false"
 	CHECK_JIRA="false"
@@ -75,7 +75,9 @@ configure_tools() {
 		return 1
 	fi
 
-	read -r -a tools_array <<<"${tools}"
+	local tools_array
+	IFS=',' read -r -a tools_array <<<"${tools}"
+	local tool
 	for tool in "${tools_array[@]}"; do
 		case "${tool}" in
 		github)
@@ -107,7 +109,6 @@ configure_tools() {
 # - 0 on success
 # - 1 when an enabled tool is missing dependencies or authentication
 validate_enabled_tools() {
-	local mcp_config
 	local failed=0
 
 	if [[ "${CHECK_JIRA}" == "true" ]]; then
@@ -125,16 +126,17 @@ validate_enabled_tools() {
 	if [[ "${CHECK_COWORKER}" == "true" ]]; then
 		if ! check_coworker_dependencies; then
 			failed=1
-		elif ! mcp_config=$(resolve_mcp_config); then
-			failed=1
-		elif ! check_coworker_mcp "${mcp_config}"; then
-			failed=1
+		else
+			local mcp_config
+			if ! mcp_config=$(resolve_mcp_config); then
+				failed=1
+			elif ! check_coworker_mcp "${mcp_config}"; then
+				failed=1
+			fi
 		fi
 	fi
 
-	if [[ "${failed}" -ne 0 ]]; then
-		return 1
-	fi
+	[[ "${failed}" -ne 0 ]] && return 1
 
 	return 0
 }
@@ -148,10 +150,8 @@ validate_enabled_tools() {
 # - 0 on success
 # - 1 on failure
 set_default_author() {
-	local configured_author
-	local configured_email
-
 	if [[ -z "${AUTHOR}" ]]; then
+		local configured_author
 		if ! configured_author=$(git config --global --get user.name 2>/dev/null); then
 			configured_author=""
 		fi
@@ -159,6 +159,7 @@ set_default_author() {
 		if [[ -n "${configured_author}" ]]; then
 			AUTHOR="${configured_author}"
 		else
+			local configured_email
 			if ! configured_email=$(git config --global --get user.email 2>/dev/null); then
 				configured_email=""
 			fi
@@ -184,9 +185,6 @@ set_default_author() {
 # - 0 on success
 # - 1 on validation failure
 validate_repo() {
-	local toplevel
-	local author_output
-
 	if [[ -z "${REPO_PATH}" || -z "${AUTHOR}" ]]; then
 		echo "validate_repo:: REPO_PATH or AUTHOR is not set" >&2
 		return 1
@@ -197,12 +195,14 @@ validate_repo() {
 		return 1
 	fi
 
+	local toplevel
 	if ! toplevel=$(git_cmd rev-parse --show-toplevel 2>/dev/null); then
 		echo "validate_repo:: Failed to get repository name" >&2
 		return 1
 	fi
 	REPO_NAME=$(basename "${toplevel}")
 
+	local author_output
 	if ! author_output=$(git_cmd log --regexp-ignore-case --author="${AUTHOR}" --max-count=1 --oneline 2>/dev/null); then
 		author_output=""
 	fi
@@ -224,7 +224,11 @@ validate_repo() {
 # - 0 on success
 # - 1 on failure
 process_commits() {
-	local total_commits="${#COMMITS[@]}"
+	if [[ -z "${REPO_PATH}" || -z "${OUTPUT_PATH}" ]]; then
+		echo "process_commits:: REPO_PATH or OUTPUT_PATH is not set" >&2
+		return 1
+	fi
+
 	local commit
 	local short_commit
 	local commit_dir
@@ -233,16 +237,6 @@ process_commits() {
 	local jira_file
 	local github_link
 	local pr_file
-
-	if [[ -z "${REPO_PATH}" || -z "${OUTPUT_PATH}" ]]; then
-		echo "process_commits:: REPO_PATH or OUTPUT_PATH is not set" >&2
-		return 1
-	fi
-
-	if [[ ${total_commits} -eq 0 ]]; then
-		echo "No commits found"
-	fi
-
 	for commit in "${COMMITS[@]}"; do
 		if ! short_commit=$(git_cmd rev-parse --short "${commit}" 2>/dev/null); then
 			echo "process_commits:: Failed to get short commit hash for ${commit}" >&2
@@ -338,7 +332,6 @@ process_meetings() {
 # - 1 on validation failure
 apply_repo() {
 	local spec="${1:-}"
-	local repos_root="${TELLME_REPOS_ROOT:-}"
 
 	REPO_PATH=""
 	BRANCH=""
@@ -361,6 +354,7 @@ apply_repo() {
 		return 1
 	fi
 
+	local repos_root="${TELLME_REPOS_ROOT:-}"
 	if [[ "${REPO_PATH}" != /* && -n "${repos_root}" ]]; then
 		REPO_PATH="${repos_root%/}/${REPO_PATH}"
 	fi
@@ -375,6 +369,7 @@ apply_repo() {
 #
 # Side Effects:
 # - Sets REPO_PATH, BRANCH, REPO_NAME, COMMITS, OUTPUT_PATH, and sanitized names
+# - Prints === spec, N commit or commits === after commits are collected
 # - Creates commit and meeting output directories
 #
 # Returns:
@@ -388,6 +383,12 @@ process_repo() {
 	apply_repo "${spec}" || return 1
 	validate_repo || return 1
 	get_commits || return 1
+
+	local commit_noun="commits"
+	if ((${#COMMITS[@]} == 1)); then
+		commit_noun="commit"
+	fi
+	echo "=== ${spec} (${#COMMITS[@]} ${commit_noun}) ==="
 
 	if ! sanitize_names "${AUTHOR}" "${BRANCH}"; then
 		echo "process_repo:: Failed to sanitize names" >&2
@@ -403,9 +404,50 @@ process_repo() {
 
 	process_commits || return 1
 
+	if [[ "${CHECK_GITHUB}" == "true" ]]; then
+		process_involvement_prs || return 1
+	fi
+
 	if [[ "${CHECK_COWORKER}" == "true" ]]; then
 		process_meetings || return 1
 	fi
+
+	return 0
+}
+
+# Collects PRs the author merged, reviewed, or commented on in the period
+#
+# Side Effects:
+# - Creates OUTPUT_PATH/prs/{merged,reviewed,commented}/ when missing
+# - Writes index.json files via write_involvement_prs
+# - Prints a summary card with per-role counts and the three index paths
+#
+# Returns:
+# - 0 on success
+# - 1 on failure
+process_involvement_prs() {
+	if [[ -z "${OUTPUT_PATH}" ]]; then
+		echo "process_involvement_prs:: OUTPUT_PATH is not set" >&2
+		return 1
+	fi
+
+	write_involvement_prs "${OUTPUT_PATH}" || return 1
+
+	local prs_root="${OUTPUT_PATH}/prs"
+	local counts=""
+	local role
+	local count
+	for role in merged reviewed commented; do
+		count=$(jq 'length' "${prs_root}/${role}/index.json" 2>/dev/null) || count="unknown"
+		counts="${counts}${counts:+, }${role} ${count}"
+	done
+
+	print_section
+	print_field "PRs" "${counts}" "github"
+	print_paths \
+		"${prs_root}/merged/index.json" \
+		"${prs_root}/reviewed/index.json" \
+		"${prs_root}/commented/index.json"
 
 	return 0
 }
@@ -419,15 +461,13 @@ process_repo() {
 # - 0 on success
 # - 1 when a required library file is missing
 _setup() {
-	local script_dir=""
-	local lib_file=""
-	local tool_lib=""
-
+	local script_dir
 	script_dir=$(dirname "${BASH_SOURCE[0]}")
 	if [[ "${script_dir}" != /* ]]; then
 		script_dir="$(cd "${script_dir}" && pwd)"
 	fi
 
+	local lib_file
 	for lib_file in \
 		"${script_dir}/tools/lib/print.sh" \
 		"${script_dir}/tools/lib/util.sh" \
@@ -441,6 +481,7 @@ _setup() {
 		source "${lib_file}"
 	done
 
+	local tool_lib
 	for tool_lib in \
 		"${script_dir}/tools/github.sh" \
 		"${script_dir}/tools/jira.sh" \
@@ -457,15 +498,12 @@ _setup() {
 }
 
 main() {
-	local tools=""
-	local spec=""
-	local failed=0
-
 	_setup || return 1
 
 	COMMITS=()
 	REPOS=()
 
+	local tools=""
 	while [[ $# -gt 0 ]]; do
 		case "$1" in
 		-h | --help)
@@ -524,7 +562,7 @@ main() {
 		return 1
 	fi
 
-	if [[ ${#REPOS[@]} -eq 0 ]]; then
+	if [[ "${#REPOS[@]}" -eq 0 ]]; then
 		echo "main:: at least one --repo is required" >&2
 		return 1
 	fi
@@ -533,17 +571,15 @@ main() {
 	determine_period_dates || return 1
 	validate_enabled_tools || return 1
 
+	local spec
+	local failed=0
 	for spec in "${REPOS[@]}"; do
-		echo "=== ${spec} ==="
 		if ! process_repo "${spec}"; then
 			failed=1
 		fi
 	done
 
-	if [[ "${failed}" -ne 0 ]]; then
-		return 1
-	fi
-
+	[[ "${failed}" -ne 0 ]] && return 1
 	return 0
 }
 

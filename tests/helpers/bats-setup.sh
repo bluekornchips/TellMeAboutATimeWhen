@@ -104,14 +104,14 @@ bats_source_libs() {
 # - 1 on failure
 assert_rejects_direct_execution() {
 	local script_path="${1:-}"
-	local status
-	local output
 
 	if [[ -z "${script_path}" ]]; then
 		echo "assert_rejects_direct_execution:: script_path is required" >&2
 		return 1
 	fi
 
+	local output
+	local status
 	output=$("${script_path}" 2>&1) && status=0 || status=$?
 	if [[ "${status}" -ne 1 ]]; then
 		echo "assert_rejects_direct_execution:: expected exit 1, got ${status}" >&2

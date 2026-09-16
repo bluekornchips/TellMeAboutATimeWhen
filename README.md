@@ -12,6 +12,19 @@ Each commit directory can contain:
 - `pr.json`: Pull request details when `github` is enabled
 - `jira.txt`: Ticket details extracted from the commit message when `jira` is enabled
 
+When `github` is enabled, the analyzer also writes involvement PRs under `prs/`:
+
+- `prs/merged/index.json`: PRs the author merged in the date window
+- `prs/reviewed/index.json`: PRs the author reviewed, any `reviewed-by` activity
+- `prs/commented/index.json`: PRs the author commented on
+
+Involvement collection uses `-a` as the GitHub login when it matches username shape; otherwise it falls back to `gh api user`. These indexes are written even when no local commits are found in the range.
+
+Two properties matter when reading these indexes:
+
+- GitHub PR search has no `merged-by` qualifier, so the merged role lists merged PRs in the window and filters on `mergedBy` locally. Merged entries carry a true `mergedAt`.
+- The reviewed and commented roles are windowed by last update, not by when the review or comment happened, because GitHub search offers no event-time qualifier for them. A PR reviewed earlier but updated inside the window still appears. The same PR can appear under more than one role, so dedupe by `number` before counting.
+
 The `coworker` tool does not download meetings from bash. It verifies Coworker MCP in `~/.cursor/mcp.json`, creates `meetings/`, and prints the date window plus project skill paths. The parent skill then calls Coworker `calendar_search` and `transcript_by_id` and writes:
 
 - `meetings/YYYY-MM-DD_slug/details.txt`: Title, time, attendees, URL, summary, decisions, action items
@@ -111,13 +124,17 @@ $OUTPUT_DIR/{repo_name}/{branch}/{author}/
 |   |-- diff.txt
 |   |-- pr.json
 |   `-- jira.txt
+|-- prs/
+|   |-- merged/index.json
+|   |-- reviewed/index.json
+|   `-- commented/index.json
 `-- meetings/
     `-- YYYY-MM-DD_slug/
         |-- details.txt
         `-- transcript.txt
 ```
 
-Branch and author path segments are lowercased and sanitized for the filesystem. The CLI creates `meetings/`; the parent skill fills meeting files.
+Branch and author path segments are lowercased and sanitized for the filesystem. The CLI creates `meetings/` and `prs/`; the parent skill fills meeting files and reads both commit-linked and involvement PR evidence.
 
 Child skills write distinct report files under `updates/`:
 
@@ -130,7 +147,7 @@ Child skills write distinct report files under `updates/`:
 
 [`tools/lib/print.sh`](tools/lib/print.sh) formats the commit and meetings summary cards at the end of a run. Everything else is plain bash.
 
-- Summary stdout: `print_section` / `print_field` / `print_paths` for Commit, Diff, Jira, GitHub, Meetings, Window, Parent, Child
+- Summary stdout: `=== repo:branch, N commits ===` from `process_repo`, then `print_section` / `print_field` / `print_paths` for Commit, Diff, Jira, GitHub, PRs, Meetings, Window, Parent, Child
 - Errors stderr: `echo "function:: message" >&2`
 - Separators: ASCII hyphens; width from `COLUMNS`, capped at 120
 - Summary cards always use color

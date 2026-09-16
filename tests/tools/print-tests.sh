@@ -8,7 +8,6 @@ setup_file() {
 	SCRIPT="${GIT_ROOT}/tools/lib/print.sh"
 	if [[ ! -f "${SCRIPT}" ]]; then
 		echo "setup:: Script not found: ${SCRIPT}" >&2
-
 		return 1
 	fi
 

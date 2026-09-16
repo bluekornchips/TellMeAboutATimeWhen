@@ -7,8 +7,8 @@ setup_file() {
 	# shellcheck disable=SC1090
 	source "$(git rev-parse --show-toplevel)/tests/helpers/bats-setup.sh"
 	bats_resolve_paths "tools/jira.sh" || return 1
-	if [[ ! -f "$HELPER" ]]; then
-		echo "setup:: Helper not found: $HELPER" >&2
+	if [[ ! -f "${HELPER}" ]]; then
+		echo "setup:: Helper not found: ${HELPER}" >&2
 		return 1
 	fi
 
@@ -24,10 +24,10 @@ setup() {
 	export TEST_DIR
 	cd "${GIT_ROOT}" || return 1
 	# shellcheck disable=SC1090
-	source "$HELPER"
+	source "${HELPER}"
 	# shellcheck disable=SC1090
 	source "${GIT_ROOT}/tests/helpers/bats-setup.sh"
-	bats_source_libs "$SCRIPT"
+	bats_source_libs "${SCRIPT}"
 	export REPO_PATH
 
 	return 0
@@ -39,7 +39,7 @@ mock_acli_success() {
 	acli() {
 		if [[ "$1" == "jira" && "$2" == "workitem" && "$3" == "view" ]]; then
 			local ticket_id="$4"
-			echo "Ticket: $ticket_id"
+			echo "Ticket: ${ticket_id}"
 			echo "Summary: Test Ticket"
 			echo "Status: In Progress"
 			echo "Assignee: Test User"
@@ -89,7 +89,7 @@ mock_acli_comment_failure() {
 			echo "Authenticated as test@example.com"
 		elif [[ "$1" == "jira" && "$2" == "workitem" && "$3" == "view" ]]; then
 			local ticket_id="$4"
-			echo "Ticket: $ticket_id"
+			echo "Ticket: ${ticket_id}"
 			echo "Summary: Test Ticket"
 		elif [[ "$1" == "jira" && "$2" == "workitem" && "$3" == "comment" && "$4" == "list" && "$5" == "--key" ]]; then
 			return 1
@@ -134,80 +134,80 @@ mock_acli_success
 
 @test "extract_jira_tickets:: returns empty when no tickets found" {
 	local test_repo="${TEST_DIR}/test_repo"
-	local commit
-	create_worktree_repo "$test_repo"
+	create_worktree_repo "${test_repo}"
 	echo "test" >file.txt
 	git add file.txt
 	git commit -m "No ticket here" >/dev/null 2>&1
 
+	local commit
 	commit=$(git rev-parse HEAD)
 	REPO_PATH=""
 
-	run extract_jira_tickets "$commit"
+	run extract_jira_tickets "${commit}"
 	[[ "$status" -eq 0 ]]
 	[[ -z "$output" ]]
 }
 
 @test "extract_jira_tickets:: extracts single ticket ID" {
 	local test_repo="${TEST_DIR}/test_repo"
-	local commit
-	create_worktree_repo "$test_repo"
+	create_worktree_repo "${test_repo}"
 	echo "test" >file.txt
 	git add file.txt
 	git commit -m "PROJ-123: Fix bug" >/dev/null 2>&1
 
+	local commit
 	commit=$(git rev-parse HEAD)
 	REPO_PATH=""
 
-	run extract_jira_tickets "$commit"
+	run extract_jira_tickets "${commit}"
 	[[ "$status" -eq 0 ]]
 	echo "$output" | grep -q "PROJ-123"
 }
 
 @test "extract_jira_tickets:: extracts alphanumeric project keys like TEAM" {
 	local test_repo="${TEST_DIR}/test_repo"
-	local commit
-	create_worktree_repo "$test_repo"
+	create_worktree_repo "${test_repo}"
 	echo "test" >file.txt
 	git add file.txt
 	git commit -m "TEAM-456: Platform work" >/dev/null 2>&1
 
+	local commit
 	commit=$(git rev-parse HEAD)
 	REPO_PATH=""
 
-	run extract_jira_tickets "$commit"
+	run extract_jira_tickets "${commit}"
 	[[ "$status" -eq 0 ]]
 	echo "$output" | grep -q "TEAM-456"
 }
 
 @test "extract_jira_tickets:: extracts alphanumeric keys from merge commit branch names" {
 	local test_repo="${TEST_DIR}/test_repo"
-	local commit
-	create_worktree_repo "$test_repo"
+	create_worktree_repo "${test_repo}"
 	echo "test" >file.txt
 	git add file.txt
 	git commit -m "Merge pull request #12 from org/feature/TEAM-789-login" >/dev/null 2>&1
 
+	local commit
 	commit=$(git rev-parse HEAD)
 	REPO_PATH=""
 
-	run extract_jira_tickets "$commit"
+	run extract_jira_tickets "${commit}"
 	[[ "$status" -eq 0 ]]
 	echo "$output" | grep -q "TEAM-789"
 }
 
 @test "extract_jira_tickets:: extracts multiple unique ticket IDs" {
 	local test_repo="${TEST_DIR}/test_repo"
-	local commit
-	create_worktree_repo "$test_repo"
+	create_worktree_repo "${test_repo}"
 	echo "test" >file.txt
 	git add file.txt
 	git commit -m "PROJ-1 and PROJ-2 plus PROJ-1 again" >/dev/null 2>&1
 
+	local commit
 	commit=$(git rev-parse HEAD)
 	REPO_PATH=""
 
-	run extract_jira_tickets "$commit"
+	run extract_jira_tickets "${commit}"
 	[[ "$status" -eq 0 ]]
 	echo "$output" | grep -q "PROJ-1"
 	echo "$output" | grep -q "PROJ-2"
@@ -217,20 +217,20 @@ mock_acli_success
 @test "extract_jira_tickets:: uses REPO_PATH when set" {
 	local test_repo1="${TEST_DIR}/repo1"
 	local test_repo2="${TEST_DIR}/repo2"
-	local commit
-	create_worktree_repo "$test_repo1"
+	create_worktree_repo "${test_repo1}"
 	echo "test" >file.txt
 	git add file.txt
 	git commit -m "PROJ-111: First repo" >/dev/null 2>&1
-	create_worktree_repo "$test_repo2"
+	create_worktree_repo "${test_repo2}"
 	echo "test" >file.txt
 	git add file.txt
 	git commit -m "PROJ-222: Second repo" >/dev/null 2>&1
 
-	commit=$(git -C "$test_repo2" rev-parse HEAD)
-	REPO_PATH="$test_repo2"
+	local commit
+	commit=$(git -C "${test_repo2}" rev-parse HEAD)
+	REPO_PATH="${test_repo2}"
 
-	run extract_jira_tickets "$commit"
+	run extract_jira_tickets "${commit}"
 	[[ "$status" -eq 0 ]]
 	echo "$output" | grep -q "PROJ-222"
 	echo "$output" | grep -v -q "PROJ-111"
@@ -286,103 +286,103 @@ mock_acli_success
 # write_jira_details
 @test "write_jira_details:: fails when commit is not set" {
 	local jira_file="${TEST_DIR}/output/jira.txt"
-	mkdir -p "$(dirname "$jira_file")"
+	mkdir -p "$(dirname "${jira_file}")"
 
-	run write_jira_details "" "$jira_file"
+	run write_jira_details "" "${jira_file}"
 	[[ "$status" -eq 1 ]]
 	echo "$output" | grep -q "commit or jira_file is not set"
 }
 
 @test "write_jira_details:: fails when jira_file is not set" {
 	local test_repo="${TEST_DIR}/test_repo"
-	local commit
-	create_worktree_repo "$test_repo"
+	create_worktree_repo "${test_repo}"
 	echo "test" >file.txt
 	git add file.txt
 	git commit -m "PROJ-123: Test" >/dev/null 2>&1
 
+	local commit
 	commit=$(git rev-parse HEAD)
 
-	run write_jira_details "$commit" ""
+	run write_jira_details "${commit}" ""
 	[[ "$status" -eq 1 ]]
 	echo "$output" | grep -q "commit or jira_file is not set"
 }
 
 @test "write_jira_details:: fails when commit directory does not exist" {
 	local test_repo="${TEST_DIR}/test_repo"
-	local commit
-	create_worktree_repo "$test_repo"
+	create_worktree_repo "${test_repo}"
 	echo "test" >file.txt
 	git add file.txt
 	git commit -m "PROJ-123: Test" >/dev/null 2>&1
 
+	local commit
 	commit=$(git rev-parse HEAD)
 	local jira_file="${TEST_DIR}/nonexistent/jira.txt"
 
-	run write_jira_details "$commit" "$jira_file"
+	run write_jira_details "${commit}" "${jira_file}"
 	[[ "$status" -eq 1 ]]
 	echo "$output" | grep -q "Commit directory does not exist"
 }
 
 @test "write_jira_details:: writes ticket details to file" {
 	local test_repo="${TEST_DIR}/test_repo"
-	local commit
-	create_worktree_repo "$test_repo"
+	create_worktree_repo "${test_repo}"
 	echo "test" >file.txt
 	git add file.txt
 	git commit -m "PROJ-123: Test ticket" >/dev/null 2>&1
 
+	local commit
 	commit=$(git rev-parse HEAD)
 	REPO_PATH=""
 	local jira_file="${TEST_DIR}/output/jira.txt"
-	mkdir -p "$(dirname "$jira_file")"
+	mkdir -p "$(dirname "${jira_file}")"
 
-	run write_jira_details "$commit" "$jira_file"
+	run write_jira_details "${commit}" "${jira_file}"
 	[[ "$status" -eq 0 ]]
-	[[ -f "$jira_file" ]]
-	grep -q "Ticket: PROJ-123" "$jira_file"
+	[[ -f "${jira_file}" ]]
+	grep -q "Ticket: PROJ-123" "${jira_file}"
 }
 
 @test "write_jira_details:: uses REPO_PATH when set" {
 	local test_repo1="${TEST_DIR}/repo1"
 	local test_repo2="${TEST_DIR}/repo2"
-	local commit
-	create_worktree_repo "$test_repo1"
+	create_worktree_repo "${test_repo1}"
 	echo "test" >file.txt
 	git add file.txt
 	git commit -m "PROJ-111: First repo" >/dev/null 2>&1
-	create_worktree_repo "$test_repo2"
+	create_worktree_repo "${test_repo2}"
 	echo "test" >file.txt
 	git add file.txt
 	git commit -m "PROJ-222: Second repo" >/dev/null 2>&1
 
-	commit=$(git -C "$test_repo2" rev-parse HEAD)
-	REPO_PATH="$test_repo2"
+	local commit
+	commit=$(git -C "${test_repo2}" rev-parse HEAD)
+	REPO_PATH="${test_repo2}"
 	local jira_file="${TEST_DIR}/output/jira.txt"
-	mkdir -p "$(dirname "$jira_file")"
+	mkdir -p "$(dirname "${jira_file}")"
 
-	run write_jira_details "$commit" "$jira_file"
+	run write_jira_details "${commit}" "${jira_file}"
 	[[ "$status" -eq 0 ]]
-	[[ -f "$jira_file" ]]
-	grep -q "Ticket: PROJ-222" "$jira_file"
-	! grep -q "PROJ-111" "$jira_file"
+	[[ -f "${jira_file}" ]]
+	grep -q "Ticket: PROJ-222" "${jira_file}"
+	! grep -q "PROJ-111" "${jira_file}"
 }
 
 @test "write_jira_details:: returns success when no tickets found" {
 	local test_repo="${TEST_DIR}/test_repo"
-	local commit
-	create_worktree_repo "$test_repo"
+	create_worktree_repo "${test_repo}"
 	echo "test" >file.txt
 	git add file.txt
 	git commit -m "No ticket here" >/dev/null 2>&1
 
+	local commit
 	commit=$(git rev-parse HEAD)
 	local jira_file="${TEST_DIR}/output/jira.txt"
-	mkdir -p "$(dirname "$jira_file")"
+	mkdir -p "$(dirname "${jira_file}")"
 
-	run write_jira_details "$commit" "$jira_file"
+	run write_jira_details "${commit}" "${jira_file}"
 	[[ "$status" -eq 0 ]]
-	[[ ! -f "$jira_file" ]]
+	[[ ! -f "${jira_file}" ]]
 }
 
 # validate_jira_auth
@@ -403,6 +403,6 @@ mock_acli_success
 @test "integration:: rejects direct script execution" {
 	# shellcheck disable=SC1090
 	source "${GIT_ROOT}/tests/helpers/bats-setup.sh"
-	run assert_rejects_direct_execution "$SCRIPT"
+	run assert_rejects_direct_execution "${SCRIPT}"
 	[[ "$status" -eq 0 ]]
 }

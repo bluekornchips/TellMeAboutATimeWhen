@@ -3,9 +3,7 @@
 # Commit selection, period, and diff helpers for tell-me-about.sh.
 #
 
-if declare -F get_commits >/dev/null 2>&1; then
-	return 0
-fi
+declare -F get_commits >/dev/null 2>&1 && return 0
 
 # Parses and validates a date string in YYYY-MM-DD format
 #
@@ -20,7 +18,6 @@ fi
 # - 1 on parse failure
 parse_date() {
 	local date_string="$1"
-	local result
 
 	if [[ -z "${date_string}" ]]; then
 		echo "parse_date:: date_string is required" >&2
@@ -32,7 +29,8 @@ parse_date() {
 		return 1
 	fi
 
-	if [[ $(uname) == "Darwin" ]]; then
+	local result
+	if [[ "$(uname)" == "Darwin" ]]; then
 		if ! result=$(date -j -f "%Y-%m-%d" "${date_string}" +%Y-%m-%d 2>/dev/null); then
 			echo "parse_date:: Failed to parse date: ${date_string}" >&2
 			return 1
@@ -153,21 +151,21 @@ append_unique_commit() {
 collect_merge_commits_for_author() {
 	local since_date="$1"
 	local until_date="$2"
-	local author_lower
-	local log_output
-	local hash
-	local subject
-	local subject_lower
 
+	local author_lower
 	if ! author_lower=$(printf '%s' "${AUTHOR}" | tr '[:upper:]' '[:lower:]'); then
 		author_lower="${AUTHOR}"
 	fi
 
+	local log_output
 	if ! log_output=$(git_cmd log --merges --pretty=format:"%h%x1f%s" --since="${since_date}" --until="${until_date}" "${BRANCH}" 2>/dev/null); then
 		echo "collect_merge_commits_for_author:: Failed to get merge commit list" >&2
 		return 1
 	fi
 
+	local hash
+	local subject
+	local subject_lower
 	while IFS=$'\x1f' read -r hash subject; do
 		if [[ -z "${hash}" ]]; then
 			continue
@@ -192,11 +190,6 @@ collect_merge_commits_for_author() {
 # - 0 on success
 # - 1 on failure
 get_commits() {
-	local since_date
-	local until_date
-	local log_output
-	local hash
-
 	COMMITS=()
 
 	if [[ -z "${REPO_PATH}" || -z "${BRANCH}" || -z "${AUTHOR}" ]]; then
@@ -204,14 +197,16 @@ get_commits() {
 		return 1
 	fi
 
-	since_date="${PERIOD_START} 00:00:00"
-	until_date="${PERIOD_END} 23:59:59"
+	local since_date="${PERIOD_START} 00:00:00"
+	local until_date="${PERIOD_END} 23:59:59"
 
+	local log_output
 	if ! log_output=$(git_cmd log --pretty=format:"%h" --regexp-ignore-case --author="${AUTHOR}" --since="${since_date}" --until="${until_date}" "${BRANCH}" 2>/dev/null); then
 		echo "get_commits:: Failed to get commit list" >&2
 		return 1
 	fi
 
+	local hash
 	while IFS= read -r hash; do
 		append_unique_commit "${hash}"
 	done <<<"${log_output}"
@@ -235,7 +230,6 @@ get_commits() {
 write_commit_details() {
 	local commit="$1"
 	local output_file="$2"
-	local failed=0
 
 	if [[ -z "${commit}" || -z "${output_file}" ]]; then
 		echo "write_commit_details:: commit or output_file is not set" >&2
@@ -248,6 +242,7 @@ write_commit_details() {
 	fi
 
 	if [[ ! -f "${output_file}" ]]; then
+		local failed=0
 		if ! git_cmd log -p --format="%B" -n 1 "${commit}" >>"${output_file}" 2>/dev/null; then
 			echo "write_commit_details:: Failed to get commit details for ${commit}" >&2
 			failed=1
@@ -258,9 +253,7 @@ write_commit_details() {
 			failed=1
 		fi
 
-		if [[ "${failed}" -ne 0 ]]; then
-			return 1
-		fi
+		[[ "${failed}" -ne 0 ]] && return 1
 	fi
 
 	return 0

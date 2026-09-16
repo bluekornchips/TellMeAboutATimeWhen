@@ -3,9 +3,7 @@
 # Shared git helpers for the orchestrator and tools.
 #
 
-if declare -F git_cmd >/dev/null 2>&1; then
-	return 0
-fi
+declare -F git_cmd >/dev/null 2>&1 && return 0
 
 # Runs git with optional repository path from REPO_PATH
 #
@@ -39,9 +37,6 @@ git_cmd() {
 # - 1 on failure
 resolve_remote_owner_repo() {
 	local remote_url
-	local repo_owner
-	local repo_name
-
 	if ! remote_url=$(git_cmd config --get remote.origin.url 2>/dev/null); then
 		if [[ -n "${REPO_PATH}" ]]; then
 			echo "resolve_remote_owner_repo:: Failed to get git remote URL from ${REPO_PATH}" >&2
@@ -51,6 +46,8 @@ resolve_remote_owner_repo() {
 		return 1
 	fi
 
+	local repo_owner
+	local repo_name
 	if [[ "${remote_url}" =~ ^https://github.com/([^/]+)/([^/]+) ]]; then
 		repo_owner="${BASH_REMATCH[1]}"
 		repo_name="${BASH_REMATCH[2]%.git}"

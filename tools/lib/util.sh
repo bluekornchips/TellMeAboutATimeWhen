@@ -3,9 +3,7 @@
 # Shared micro-helpers for tell-me-about tools and orchestrator.
 #
 
-if declare -F require_cmd >/dev/null 2>&1; then
-	return 0
-fi
+declare -F require_cmd >/dev/null 2>&1 && return 0
 
 # Checks that a command exists on PATH
 #
@@ -44,14 +42,12 @@ require_cmd() {
 # - 1 when missing
 array_contains() {
 	local needle="${1:-}"
-	local item
 
 	shift || true
 
+	local item
 	for item in "$@"; do
-		if [[ "${item}" == "${needle}" ]]; then
-			return 0
-		fi
+		[[ "${item}" == "${needle}" ]] && return 0
 	done
 
 	return 1

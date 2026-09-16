@@ -88,7 +88,6 @@ write_meetings_stub() {
 	local meetings_dir="${1:-}"
 	local period_start="${2:-}"
 	local period_end="${3:-}"
-	local mcp_config
 
 	if [[ -z "${meetings_dir}" ]]; then
 		echo "write_meetings_stub:: meetings_dir is not set" >&2
@@ -107,6 +106,7 @@ write_meetings_stub() {
 
 	print_section
 	check_coworker_dependencies || return 1
+	local mcp_config
 	mcp_config=$(resolve_mcp_config) || return 1
 	if ! check_coworker_mcp "${mcp_config}"; then
 		echo "write_meetings_stub:: Coworker MCP is not configured" >&2

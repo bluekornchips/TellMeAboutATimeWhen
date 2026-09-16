@@ -22,15 +22,21 @@ Call MCP tools directly instead of starting an additional model-powered agent. C
    `$OUTPUT_DIR/{repo_name}/{branch}/{author}/`.
 2. For each analysis root, read every relevant commit directory under that root.
 3. Use `diff.txt`, `pr.json`, and `jira.txt` when present.
-4. Reuse existing commit artifacts and `meetings/` files when present. Only fill gaps; do not re-fetch calendar or transcripts for meetings that already have `details.txt` or `transcript.txt`.
-5. Use the commit analysis `--range` as the meeting window for each analysis root.
-6. Resolve timezone from `COWORKER_TIMEZONE`, the local system timezone, or the user's stated timezone.
-7. Call Coworker `calendar_search` with `start_date`, `end_date`, `timezone`, and `limit` 100 when meeting evidence is missing.
-8. For each meeting with a `transcript_id` and no `transcript.txt` yet, call Coworker `transcript_by_id` with that id, the same timezone, and `max_chars` 100000. Page with `offset_chars` until the transcript is complete.
-9. Persist meeting artifacts to disk in the same turn you retrieve them. Do not keep transcripts only in context and then write a short `details.txt`.
-10. Apply the requested child skill to the complete commit and meeting evidence set across all analysis roots.
+4. Also read involvement PR indexes when present:
+   `prs/merged/index.json`, `prs/reviewed/index.json`, and `prs/commented/index.json`.
+   These exist even when there are no commit directories in the window.
+   A PR can appear under more than one role, so dedupe by `number` before counting.
+   Reviewed and commented entries are windowed by last update, not by when the review
+   or comment happened, so do not claim the review date from the window alone.
+5. Reuse existing commit artifacts, `prs/` indexes, and `meetings/` files when present. Only fill gaps; do not re-fetch calendar or transcripts for meetings that already have `details.txt` or `transcript.txt`.
+6. Use the commit analysis `--range` as the meeting window for each analysis root.
+7. Resolve timezone from `COWORKER_TIMEZONE`, the local system timezone, or the user's stated timezone.
+8. Call Coworker `calendar_search` with `start_date`, `end_date`, `timezone`, and `limit` 100 when meeting evidence is missing.
+9. For each meeting with a `transcript_id` and no `transcript.txt` yet, call Coworker `transcript_by_id` with that id, the same timezone, and `max_chars` 100000. Page with `offset_chars` until the transcript is complete.
+10. Persist meeting artifacts to disk in the same turn you retrieve them. Do not keep transcripts only in context and then write a short `details.txt`.
+11. Apply the requested child skill to the complete commit, involvement PR, and meeting evidence set across all analysis roots.
 
-Do not invent missing commits, tickets, pull requests, meetings, or transcripts. If Coworker MCP is unavailable, state that limitation and continue from commit evidence.
+Do not invent missing commits, tickets, pull requests, meetings, or transcripts. If Coworker MCP is unavailable, state that limitation and continue from commit and involvement PR evidence.
 
 ## Required meeting structure
 
@@ -40,6 +46,10 @@ $HOME/tellme/{repo_name}/{branch}/{author}/
 |   |-- diff.txt
 |   |-- pr.json
 |   `-- jira.txt
+|-- prs/
+|   |-- merged/index.json
+|   |-- reviewed/index.json
+|   `-- commented/index.json
 `-- meetings/
     `-- YYYY-MM-DD_slug/
         |-- details.txt
