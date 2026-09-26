@@ -392,6 +392,24 @@ fixture_search_prs_many() {
 	echo "$output" | grep -q "AUTHOR is not set"
 }
 
+@test "resolve_github_login:: prefers GITHUB_LOGIN over a mismatched AUTHOR" {
+	AUTHOR="author@example.com"
+	GITHUB_LOGIN="testuser"
+
+	run resolve_github_login
+	[[ "$status" -eq 0 ]]
+	[[ "$output" == "testuser" ]]
+}
+
+@test "resolve_github_login:: fails when GITHUB_LOGIN is not username-shaped, ignoring a valid AUTHOR" {
+	AUTHOR="testuser"
+	GITHUB_LOGIN="Author One"
+
+	run resolve_github_login
+	[[ "$status" -eq 1 ]]
+	echo "$output" | grep -q "is not a GitHub username"
+}
+
 # search_prs_by_involvement
 @test "search_prs_by_involvement:: lists merged PRs and keeps only those the login merged" {
 	PERIOD_START="2026-09-01"

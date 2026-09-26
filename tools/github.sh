@@ -151,31 +151,36 @@ write_pr_details() {
 
 # Resolves the GitHub login for involvement searches
 #
-# AUTHOR must be the GitHub username. There is no fallback to the authenticated
-# account, so a run for another person never reports the caller's pull requests.
+# GITHUB_LOGIN must be the GitHub username; it falls back to AUTHOR when unset,
+# which covers the common case where the git commit author and the GitHub login
+# are the same string. There is no fallback to the authenticated account, so a
+# run for another person never reports the caller's pull requests.
 #
 # Inputs:
-# - AUTHOR environment variable
+# - GITHUB_LOGIN environment variable
+# - AUTHOR environment variable, used when GITHUB_LOGIN is unset
 #
 # Outputs:
 # - GitHub login to stdout
 #
 # Returns:
 # - 0 on success
-# - 1 when AUTHOR is missing or is not a GitHub username
+# - 1 when no login is available or it is not a GitHub username
 resolve_github_login() {
-	if [[ -z "${AUTHOR:-}" ]]; then
+	local login="${GITHUB_LOGIN:-${AUTHOR:-}}"
+
+	if [[ -z "${login}" ]]; then
 		echo "resolve_github_login:: AUTHOR is not set" >&2
 		return 1
 	fi
 
-	if [[ ! "${AUTHOR}" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,37}[A-Za-z0-9])?$ ]]; then
-		echo "resolve_github_login:: AUTHOR '${AUTHOR}' is not a GitHub username" >&2
-		echo "resolve_github_login:: Pass -a with the GitHub username when the github tool is enabled" >&2
+	if [[ ! "${login}" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,37}[A-Za-z0-9])?$ ]]; then
+		echo "resolve_github_login:: '${login}' is not a GitHub username" >&2
+		echo "resolve_github_login:: Pass -g|--github-login with the GitHub username when it differs from -a|--author" >&2
 		return 1
 	fi
 
-	printf '%s\n' "${AUTHOR}"
+	printf '%s\n' "${login}"
 
 	return 0
 }

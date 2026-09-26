@@ -136,7 +136,12 @@ append_unique_commit() {
 	return 0
 }
 
-# Adds merge commits whose subject contains AUTHOR
+# Adds merge commits whose subject contains the GitHub login
+#
+# Merge commit subjects follow GitHub's "Merge pull request #N from
+# <owner-or-login>/<branch>" convention, so this matches on GITHUB_LOGIN
+# (falling back to AUTHOR) rather than the git commit author, since a
+# personal fork branch is named after the GitHub login, not the git identity.
 #
 # Inputs:
 # - $1: since_date
@@ -152,9 +157,11 @@ collect_merge_commits_for_author() {
 	local since_date="$1"
 	local until_date="$2"
 
+	local match_author="${GITHUB_LOGIN:-${AUTHOR:-}}"
+
 	local author_lower
-	if ! author_lower=$(printf '%s' "${AUTHOR}" | tr '[:upper:]' '[:lower:]'); then
-		author_lower="${AUTHOR}"
+	if ! author_lower=$(printf '%s' "${match_author}" | tr '[:upper:]' '[:lower:]'); then
+		author_lower="${match_author}"
 	fi
 
 	local log_output

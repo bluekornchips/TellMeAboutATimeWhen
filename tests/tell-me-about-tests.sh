@@ -49,7 +49,7 @@ setup() {
 	# Unit tests call helpers without main; load shared libs via _setup.
 	_setup || return 1
 
-	unset PERIOD_START PERIOD_END RANGE_DATE1 RANGE_DATE2 AUTHOR BRANCH REPO_PATH
+	unset PERIOD_START PERIOD_END RANGE_DATE1 RANGE_DATE2 AUTHOR GITHUB_LOGIN BRANCH REPO_PATH
 	unset CHECK_GITHUB CHECK_JIRA CHECK_COWORKER SANITIZED_AUTHOR SANITIZED_BRANCH
 	print_init
 	COMMITS=()
@@ -400,6 +400,26 @@ EOF
 	AUTHOR="Author One"
 	PERIOD_START="2020-01-01"
 	PERIOD_END="2030-12-31"
+
+	get_commits
+	[[ "${#COMMITS[@]}" -eq 1 ]]
+}
+
+@test "get_commits:: matches merge commits by GITHUB_LOGIN when it differs from AUTHOR" {
+	create_worktree_repo "${TEST_DIR}/repo"
+	REPO_PATH="${TEST_DIR}/repo"
+	BRANCH="master"
+	AUTHOR="author@example.com"
+	GITHUB_LOGIN="octocat"
+	PERIOD_START="2020-01-01"
+	PERIOD_END="2030-12-31"
+
+	git -C "${REPO_PATH}" checkout -b octocat-feature >/dev/null 2>&1
+	echo "feature change" >>"${REPO_PATH}/test.txt"
+	git -C "${REPO_PATH}" add test.txt
+	git -C "${REPO_PATH}" commit -m "Feature commit" >/dev/null 2>&1
+	git -C "${REPO_PATH}" checkout master >/dev/null 2>&1
+	git -C "${REPO_PATH}" merge --no-ff -m "Merge pull request #1 from octocat/octocat-feature" octocat-feature >/dev/null 2>&1
 
 	get_commits
 	[[ "${#COMMITS[@]}" -eq 1 ]]
