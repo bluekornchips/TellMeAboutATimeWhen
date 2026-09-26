@@ -17,6 +17,7 @@ usage() {
 	cat <<EOF
 Usage: $(basename "$0") [--repo <path>:<branch> ...]
        [-a|--author <author>]
+       [-g|--github-login <login>]
        [--range <date> | --range <start_date> <end_date>]
        [--tools <jira,github,coworker>]
 
@@ -35,11 +36,17 @@ All tools are enabled by default. Use --tools with a comma-separated
 list to select a subset.
 
 Options:
-  --repo <path>:<branch>   : Repository path and branch, repeatable
-  -a, --author <author>    : Author of commits, defaults to git global user.name or user.email
-  --range <date>           : Analyze commits since date, or between two dates
-  --tools <tools>          : Comma-separated subset of jira,github,coworker
-  -h, --help               : Show this help message
+  --repo <path>:<branch>       : Repository path and branch, repeatable
+  -a, --author <author>        : Git commit author (name or email), matched against
+                                  "git log --author". Defaults to git global user.name
+                                  or user.email. Also used as the GitHub login when
+                                  -g|--github-login is not given.
+  -g, --github-login <login>   : GitHub username for PR search and merge-commit
+                                  matching, when it differs from the git commit
+                                  author. Defaults to the value of -a|--author.
+  --range <date>                : Analyze commits since date, or between two dates
+  --tools <tools>               : Comma-separated subset of jira,github,coworker
+  -h, --help                    : Show this help message
 
 --range is required. The coworker tool uses --range dates. Project
 skills then call Coworker MCP calendar_search and transcript_by_id.
@@ -512,6 +519,10 @@ main() {
 			;;
 		-a | --author)
 			AUTHOR="$2"
+			shift 2
+			;;
+		-g | --github-login)
+			GITHUB_LOGIN="$2"
 			shift 2
 			;;
 		--range)

@@ -18,7 +18,7 @@ When `github` is enabled, the analyzer also writes involvement PRs under `prs/`:
 - `prs/reviewed/index.json`: PRs the author reviewed, any `reviewed-by` activity
 - `prs/commented/index.json`: PRs the author commented on
 
-Involvement collection uses `-a` as the GitHub login when it matches username shape; otherwise it falls back to `gh api user`. These indexes are written even when no local commits are found in the range.
+Involvement collection uses `-g`/`--github-login` as the GitHub login, falling back to `-a`/`--author` when `-g` is not given. Pass `-g` separately when the git commit author (name or email) differs from the GitHub username, such as when a personal GitHub noreply email is not the git identity used for commits. These indexes are written even when no local commits are found in the range.
 
 Two properties matter when reading these indexes:
 
@@ -77,7 +77,7 @@ make install
 ## Usage
 
 ```bash
-./tell-me-about.sh [--repo <path>:<branch> ...] [-a <author>] --range <date> [<end>] [options]
+./tell-me-about.sh [--repo <path>:<branch> ...] [-a <author>] [-g <github-login>] --range <date> [<end>] [options]
 ```
 
 Required:
@@ -87,7 +87,8 @@ Required:
 
 Optional:
 
-- `-a, --author <author>`: Commit author; defaults to git global `user.name` or `user.email`
+- `-a, --author <author>`: Commit author (name or email), matched against `git log --author`; defaults to git global `user.name` or `user.email`
+- `-g, --github-login <login>`: GitHub username for PR search and merge-commit matching, when it differs from `-a`; defaults to the value of `-a`
 - `--range <date>`: Commits since `YYYY-MM-DD`, or between two dates when a second date is given
 - `--tools <tools>`: Comma-separated subset of `jira`, `github`, `coworker`; default is all three
 - `-h, --help`: Show help
@@ -112,6 +113,9 @@ TELLME_REPOS_ROOT="$HOME/repos" ./tell-me-about.sh \
 
 # GitHub and JIRA only
 ./tell-me-about.sh --repo /path/to/repo:main -a "Author Name" --range "2026-01-01" "2026-01-31" --tools github,jira
+
+# Git commit author differs from the GitHub login
+./tell-me-about.sh --repo /path/to/repo:main -a "author@example.com" -g "github-login" --range "2026-01-01" "2026-01-31"
 ```
 
 ## Output Structure
