@@ -14,11 +14,12 @@ Each commit directory can contain:
 
 When `github` is enabled, the analyzer also writes involvement PRs under `prs/`:
 
-- `prs/merged/index.json`: PRs the author merged in the date window
-- `prs/reviewed/index.json`: PRs the author reviewed, any `reviewed-by` activity
-- `prs/commented/index.json`: PRs the author commented on
+- `prs/merged/index.json`: PRs the GitHub user merged in the date window
+- `prs/reviewed/index.json`: PRs the GitHub user reviewed, any `reviewed-by` activity
+- `prs/commented/index.json`: PRs the GitHub user commented on
+- `prs/.signature`: Cache key for repo, GitHub user, and `--range`
 
-Involvement collection uses `-a` as the GitHub login when it matches username shape; otherwise it falls back to `gh api user`. These indexes are written even when no local commits are found in the range.
+Use `-a` as the GitHub login only when it is already a username. Otherwise pass `--github-user`. These indexes are written even when no local commits are found in the range. Changing `--range` or `--github-user` refreshes all three indexes together. Empty indexes are valid cache hits when the signature matches. A failed role search does not stamp the signature, so the next run retries.
 
 Two properties matter when reading these indexes:
 
@@ -77,7 +78,7 @@ make install
 ## Usage
 
 ```bash
-./tell-me-about.sh [--repo <path>:<branch> ...] [-a <author>] --range <date> [<end>] [options]
+./tell-me-about.sh [--repo <path>:<branch> ...] [-a <author>] [--github-user <login>] --range <date> [<end>] [options]
 ```
 
 Required:
@@ -87,18 +88,23 @@ Required:
 
 Optional:
 
-- `-a, --author <author>`: Commit author; defaults to git global `user.name` or `user.email`
+- `-a, --author <author>`: Git author; defaults to git global `user.name` or `user.email`
+- `--github-user <login>`: GitHub username when `github` is enabled; required unless `--author` is a username
 - `--range <date>`: Commits since `YYYY-MM-DD`, or between two dates when a second date is given
 - `--tools <tools>`: Comma-separated subset of `jira`, `github`, `coworker`; default is all three
 - `-h, --help`: Show help
 
-Period dates always come from `--range`. The `coworker` tool uses that window for meetings.
+Period dates always come from `--range`. Start must not be after end. The `coworker` tool uses that window for meetings.
 
 ## Examples
 
 ```bash
-# Since a date, all tools
-./tell-me-about.sh --repo /path/to/repo:main -a "Author Name" --range "2026-01-01"
+# Since a date, all tools, GitHub username matches -a
+./tell-me-about.sh --repo /path/to/repo:main -a octocat --range "2026-01-01"
+
+# Display-name git author with a separate GitHub login
+./tell-me-about.sh --repo /path/to/repo:main \
+  -a "Author Name" --github-user octocat --range "2026-01-01"
 
 # Between two dates
 ./tell-me-about.sh --repo /path/to/repo:main -a "Author Name" --range "2026-01-01" "2026-01-31"
@@ -111,7 +117,7 @@ TELLME_REPOS_ROOT="$HOME/repos" ./tell-me-about.sh \
   --range "2026-08-01" "2026-08-26"
 
 # GitHub and JIRA only
-./tell-me-about.sh --repo /path/to/repo:main -a "Author Name" --range "2026-01-01" "2026-01-31" --tools github,jira
+./tell-me-about.sh --repo /path/to/repo:main -a octocat --range "2026-01-01" "2026-01-31" --tools github,jira
 ```
 
 ## Output Structure
@@ -125,6 +131,7 @@ $OUTPUT_DIR/{repo_name}/{branch}/{author}/
 |   |-- pr.json
 |   `-- jira.txt
 |-- prs/
+|   |-- .signature
 |   |-- merged/index.json
 |   |-- reviewed/index.json
 |   `-- commented/index.json

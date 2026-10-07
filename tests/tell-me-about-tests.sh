@@ -51,6 +51,7 @@ setup() {
 
 	unset PERIOD_START PERIOD_END RANGE_DATE1 RANGE_DATE2 AUTHOR BRANCH REPO_PATH
 	unset CHECK_GITHUB CHECK_JIRA CHECK_COWORKER SANITIZED_AUTHOR SANITIZED_BRANCH
+	unset GITHUB_USER
 	print_init
 	COMMITS=()
 	OUTPUT_DIR="${TEST_DIR}/output"
@@ -134,13 +135,35 @@ EOF
 @test "validate_enabled_tools:: rejects a non-username author when github is enabled" {
 	run "${SCRIPT}" --repo "/nonexistent/path:master" -a "Test User" --range "2025-01-01" --tools github
 	[[ "${status}" -ne 0 ]]
-	echo "${output}" | grep -q "is not a GitHub username"
+	echo "${output}" | grep -q -- "--github-user is required"
+}
+
+@test "validate_enabled_tools:: accepts --github-user with a display-name author" {
+	CHECK_JIRA="false"
+	CHECK_GITHUB="true"
+	CHECK_COWORKER="false"
+	AUTHOR="Test User"
+	GITHUB_USER="octocat"
+
+	check_github_dependencies() { return 0; }
+
+	validate_enabled_tools
+	[[ "${GITHUB_USER}" == "octocat" ]]
 }
 
 @test "main:: fails when using --range option twice" {
 	run "${SCRIPT}" --repo "/tmp:master" -a "test@example.com" --range "2025-01-01" --range "2025-06-01"
 	[[ "${status}" -ne 0 ]]
 	echo "${output}" | grep -q "main:: --range option can only be used once"
+}
+
+@test "main:: rejects reversed --range dates" {
+	create_worktree_repo "${TEST_DIR}/range_repo"
+
+	run "${SCRIPT}" --repo "${TEST_DIR}/range_repo:master" -a "Test User" \
+		--range "2026-02-01" "2026-01-01" --tools coworker
+	[[ "${status}" -ne 0 ]]
+	echo "${output}" | grep -q "is after end date"
 }
 
 # configure_tools
@@ -361,6 +384,14 @@ EOF
 	run determine_period_dates
 	[[ "${status}" -ne 0 ]]
 	echo "${output}" | grep -q "determine_period_dates:: Failed to parse"
+}
+
+@test "determine_period_dates:: fails when start is after end" {
+	RANGE_DATE1="2026-02-01"
+	RANGE_DATE2="2026-01-01"
+	run determine_period_dates
+	[[ "${status}" -ne 0 ]]
+	echo "${output}" | grep -q "is after end date"
 }
 
 # sanitize_names
@@ -587,6 +618,29 @@ EOF
 	run process_commits
 	[[ "${status}" -eq 0 ]]
 	[[ -f "${OUTPUT_PATH}/${sha}/pr.json" ]]
+}
+
+@test "process_commits:: returns nonzero when github enrichment fails" {
+	create_analyzer_repo "${TEST_DIR}/repo"
+	REPO_PATH="${TEST_DIR}/repo"
+	OUTPUT_PATH="${TEST_DIR}/out"
+	mkdir -p "${OUTPUT_PATH}"
+	CHECK_GITHUB="true"
+	CHECK_JIRA="false"
+	CHECK_COWORKER="false"
+
+	write_pr_details() {
+		echo "write_pr_details:: boom" >&2
+		return 1
+	}
+
+	local sha
+	sha=$(git -C "${TEST_DIR}/repo" log --author="Author One" --format=%h -n 1)
+	COMMITS=("${sha}")
+
+	run process_commits
+	[[ "${status}" -eq 1 ]]
+	echo "${output}" | grep -q "Failed to write PR details"
 }
 
 @test "process_involvement_prs:: writes indexes and prints per-role counts" {

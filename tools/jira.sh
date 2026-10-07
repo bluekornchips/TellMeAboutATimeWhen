@@ -195,9 +195,18 @@ write_jira_details() {
 	return 0
 }
 
+# Reports that this library must be sourced, not executed
+#
+# Returns:
+# - 1 always
+main() {
+	echo "jira.sh:: source this file from tell-me-about.sh; do not run it directly" >&2
+	return 1
+}
+
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
 	set -eo pipefail
 	umask 077
-	echo "jira.sh:: source this file from tell-me-about.sh; do not run it directly" >&2
-	exit 1
+	main "$@"
+	exit $?
 fi

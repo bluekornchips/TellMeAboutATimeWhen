@@ -16,7 +16,7 @@ DEFAULT_OUTPUT_DIR="tellme"
 usage() {
 	cat <<EOF
 Usage: $(basename "$0") [--repo <path>:<branch> ...]
-       [-a|--author <author>]
+       [-a|--author <author>] [--github-user <login>]
        [--range <date> | --range <start_date> <end_date>]
        [--tools <jira,github,coworker>]
 
@@ -35,16 +35,19 @@ All tools are enabled by default. Use --tools with a comma-separated
 list to select a subset.
 
 Options:
-  --repo <path>:<branch>   : Repository path and branch, repeatable
-  -a, --author <author>    : Author of commits, defaults to git global user.name or user.email
-  --range <date>           : Analyze commits since date, or between two dates
-  --tools <tools>          : Comma-separated subset of jira,github,coworker
-  -h, --help               : Show this help message
+  --repo <path>:<branch>     : Repository path and branch, repeatable
+  -a, --author <author>      : Git author, defaults to git global user.name or user.email
+  --github-user <login>      : GitHub username when github is enabled
+  --range <date>             : Analyze commits since date, or between two dates
+  --tools <tools>            : Comma-separated subset of jira,github,coworker
+  -h, --help                 : Show this help message
 
 --range is required. The coworker tool uses --range dates. Project
 skills then call Coworker MCP calendar_search and transcript_by_id.
 
-Relative paths in --repo resolve against TELLME_REPOS_ROOT when set.
+When github is enabled, --github-user is required unless --author is
+already a GitHub username. Relative paths in --repo resolve against
+TELLME_REPOS_ROOT when set.
 
 EOF
 
@@ -229,6 +232,7 @@ process_commits() {
 		return 1
 	fi
 
+	local failed=0
 	local commit
 	local short_commit
 	local commit_dir
@@ -240,12 +244,14 @@ process_commits() {
 	for commit in "${COMMITS[@]}"; do
 		if ! short_commit=$(git_cmd rev-parse --short "${commit}" 2>/dev/null); then
 			echo "process_commits:: Failed to get short commit hash for ${commit}" >&2
+			failed=1
 			continue
 		fi
 
 		commit_dir="${OUTPUT_PATH}/${short_commit}"
 		if ! mkdir -p "${commit_dir}" 2>/dev/null; then
 			echo "process_commits:: Failed to create commit directory: ${commit_dir}" >&2
+			failed=1
 			continue
 		fi
 
@@ -253,6 +259,7 @@ process_commits() {
 		if [[ ! -f "${diff_file}" ]]; then
 			if ! write_commit_details "${commit}" "${diff_file}"; then
 				echo "process_commits:: Failed to write commit details for ${commit}" >&2
+				failed=1
 			fi
 		fi
 
@@ -262,6 +269,7 @@ process_commits() {
 			if needs_jira_refresh "${jira_file}"; then
 				if ! write_jira_details "${commit}" "${jira_file}"; then
 					echo "process_commits:: Failed to write JIRA details for ${commit}" >&2
+					failed=1
 				fi
 			fi
 			if [[ -s "${jira_file}" ]]; then
@@ -275,6 +283,7 @@ process_commits() {
 			if needs_pr_refresh "${pr_file}"; then
 				if ! write_pr_details "${commit}" "${pr_file}"; then
 					echo "process_commits:: Failed to write PR details for ${commit}" >&2
+					failed=1
 				fi
 			fi
 			github_link="${pr_file}"
@@ -290,6 +299,8 @@ process_commits() {
 			print_field "GitHub" "${github_link}" "github"
 		fi
 	done
+
+	[[ "${failed}" -ne 0 ]] && return 1
 
 	return 0
 }
@@ -512,6 +523,14 @@ main() {
 			;;
 		-a | --author)
 			AUTHOR="$2"
+			shift 2
+			;;
+		--github-user)
+			if [[ -z "${2:-}" || "$2" == -* ]]; then
+				echo "main:: --github-user requires a GitHub username" >&2
+				return 1
+			fi
+			GITHUB_USER="$2"
 			shift 2
 			;;
 		--range)

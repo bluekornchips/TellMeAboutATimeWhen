@@ -3,7 +3,58 @@
 # GitHub helpers for tell-me-about.sh. Sourced by the orchestrator, not run directly.
 #
 
+INVOLVEMENT_SCHEMA_VERSION="1"
+
+# Returns whether a value is a GitHub username
+#
+# Inputs:
+# - $1: candidate login
+#
+# Returns:
+# - 0 when the value is a GitHub username
+# - 1 otherwise
+is_github_username() {
+	local login="${1:-}"
+
+	if [[ "${login}" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,37}[A-Za-z0-9])?$ ]]; then
+		return 0
+	fi
+
+	return 1
+}
+
+# Sets GITHUB_USER from --github-user or a username-shaped AUTHOR
+#
+# Side Effects:
+# - Sets GITHUB_USER when it can be derived from AUTHOR
+#
+# Returns:
+# - 0 on success
+# - 1 when a GitHub username cannot be resolved
+set_github_user() {
+	if [[ -n "${GITHUB_USER:-}" ]]; then
+		if ! is_github_username "${GITHUB_USER}"; then
+			echo "set_github_user:: GITHUB_USER '${GITHUB_USER}' is not a GitHub username" >&2
+			return 1
+		fi
+
+		return 0
+	fi
+
+	if is_github_username "${AUTHOR:-}"; then
+		GITHUB_USER="${AUTHOR}"
+		return 0
+	fi
+
+	echo "set_github_user:: --github-user is required when --author is not a GitHub username" >&2
+
+	return 1
+}
+
 # Validates GitHub CLI dependencies, authentication, and the author login
+#
+# Side Effects:
+# - Sets GITHUB_USER via set_github_user
 #
 # Returns:
 # - 0 on success
@@ -24,7 +75,7 @@ check_github_dependencies() {
 		missing=1
 	fi
 
-	if ! resolve_github_login >/dev/null; then
+	if ! set_github_user; then
 		missing=1
 	fi
 
@@ -84,7 +135,7 @@ get_pr_details() {
 	return 0
 }
 
-# Returns whether a PR artifact should be refreshed
+# Returns whether a commit-linked PR artifact should be refreshed
 #
 # Inputs:
 # - $1: pr.json path
@@ -149,33 +200,75 @@ write_pr_details() {
 	return 0
 }
 
-# Resolves the GitHub login for involvement searches
-#
-# AUTHOR must be the GitHub username. There is no fallback to the authenticated
-# account, so a run for another person never reports the caller's pull requests.
+# Builds the involvement cache signature string
 #
 # Inputs:
-# - AUTHOR environment variable
+# - $1: repository slug owner/repo
+# - $2: GitHub login
+# - $3: period start date
+# - $4: period end date
 #
 # Outputs:
-# - GitHub login to stdout
+# - Signature string to stdout
 #
 # Returns:
 # - 0 on success
-# - 1 when AUTHOR is missing or is not a GitHub username
-resolve_github_login() {
-	if [[ -z "${AUTHOR:-}" ]]; then
-		echo "resolve_github_login:: AUTHOR is not set" >&2
+# - 1 on failure
+involvement_signature() {
+	local repo_slug="${1:-}"
+	local login="${2:-}"
+	local period_start="${3:-}"
+	local period_end="${4:-}"
+
+	if [[ -z "${repo_slug}" || -z "${login}" || -z "${period_start}" || -z "${period_end}" ]]; then
+		echo "involvement_signature:: repo_slug, login, period_start, and period_end are required" >&2
 		return 1
 	fi
 
-	if [[ ! "${AUTHOR}" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,37}[A-Za-z0-9])?$ ]]; then
-		echo "resolve_github_login:: AUTHOR '${AUTHOR}' is not a GitHub username" >&2
-		echo "resolve_github_login:: Pass -a with the GitHub username when the github tool is enabled" >&2
+	printf 'v%s|%s|%s|%s|%s\n' \
+		"${INVOLVEMENT_SCHEMA_VERSION}" \
+		"${repo_slug}" \
+		"${login}" \
+		"${period_start}" \
+		"${period_end}"
+
+	return 0
+}
+
+# Returns whether involvement indexes match the current run
+#
+# A matching signature plus three valid JSON array files, including empty
+# arrays, is treated as current.
+#
+# Inputs:
+# - $1: analysis root path
+# - $2: expected signature string
+#
+# Returns:
+# - 0 when indexes are current
+# - 1 when they should be refreshed
+involvement_indexes_current() {
+	local output_root="${1:-}"
+	local expected="${2:-}"
+	local prs_root="${output_root}/prs"
+	local sig_file="${prs_root}/.signature"
+
+	[[ -n "${output_root}" && -n "${expected}" ]] || return 1
+	[[ -f "${sig_file}" ]] || return 1
+
+	local actual
+	if ! actual=$(<"${sig_file}"); then
 		return 1
 	fi
 
-	printf '%s\n' "${AUTHOR}"
+	[[ "${actual}" == "${expected}" ]] || return 1
+
+	local role
+	for role in merged reviewed commented; do
+		local index_file="${prs_root}/${role}/index.json"
+		[[ -f "${index_file}" ]] || return 1
+		jq -e 'type == "array"' "${index_file}" >/dev/null 2>&1 || return 1
+	done
 
 	return 0
 }
@@ -278,16 +371,19 @@ search_prs_by_involvement() {
 
 # Writes involvement PR indexes under OUTPUT_PATH/prs/{role}/index.json
 #
-# A role whose search fails gets an empty index so one API miss does not
-# abort the remaining roles.
+# Refreshes all three roles together when the sidecar signature does not match
+# the current repo, GitHub user, and date window. Empty arrays are valid cache
+# hits. The signature is written only after every role search and index write
+# succeeds.
 #
 # Inputs:
 # - $1: analysis root path, typically OUTPUT_PATH
-# - AUTHOR, PERIOD_START, PERIOD_END environment variables
+# - GITHUB_USER, PERIOD_START, PERIOD_END environment variables
 #
 # Side Effects:
 # - Creates prs/{merged,reviewed,commented}/ directories
 # - Writes index.json for each role
+# - Writes prs/.signature after a successful refresh
 #
 # Returns:
 # - 0 on success
@@ -303,15 +399,31 @@ write_involvement_prs() {
 	check_github_dependencies || return 1
 	git_validate_repo || return 1
 
-	local login
-	login=$(resolve_github_login) || return 1
+	if [[ -z "${GITHUB_USER:-}" ]]; then
+		echo "write_involvement_prs:: GITHUB_USER is not set" >&2
+		return 1
+	fi
+
+	if [[ -z "${PERIOD_START:-}" || -z "${PERIOD_END:-}" ]]; then
+		echo "write_involvement_prs:: PERIOD_START and PERIOD_END are required" >&2
+		return 1
+	fi
 
 	local repo_slug
 	repo_slug=$(resolve_remote_owner_repo) || return 1
 
+	local expected_sig
+	expected_sig=$(involvement_signature "${repo_slug}" "${GITHUB_USER}" \
+		"${PERIOD_START}" "${PERIOD_END}") || return 1
+
+	if involvement_indexes_current "${output_root}" "${expected_sig}"; then
+		return 0
+	fi
+
 	local role
 	local index_file
 	local pr_data
+	local fetch_failed=0
 	for role in merged reviewed commented; do
 		index_file="${output_root}/prs/${role}/index.json"
 
@@ -320,11 +432,10 @@ write_involvement_prs() {
 			return 1
 		fi
 
-		needs_pr_refresh "${index_file}" || continue
-
-		if ! pr_data=$(search_prs_by_involvement "${role}" "${login}" "${repo_slug}"); then
+		if ! pr_data=$(search_prs_by_involvement "${role}" "${GITHUB_USER}" "${repo_slug}"); then
 			echo "write_involvement_prs:: Writing empty ${role} index, the fetch above failed" >&2
 			pr_data="[]"
+			fetch_failed=1
 		fi
 
 		if ! printf '%s\n' "${pr_data}" >"${index_file}" 2>/dev/null; then
@@ -333,12 +444,31 @@ write_involvement_prs() {
 		fi
 	done
 
+	if [[ "${fetch_failed}" -ne 0 ]]; then
+		rm -f "${output_root}/prs/.signature"
+		return 0
+	fi
+
+	if ! printf '%s' "${expected_sig}" >"${output_root}/prs/.signature" 2>/dev/null; then
+		echo "write_involvement_prs:: Failed to write involvement signature" >&2
+		return 1
+	fi
+
 	return 0
+}
+
+# Reports that this library must be sourced, not executed
+#
+# Returns:
+# - 1 always
+main() {
+	echo "github.sh:: source this file from tell-me-about.sh; do not run it directly" >&2
+	return 1
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
 	set -eo pipefail
 	umask 077
-	echo "github.sh:: source this file from tell-me-about.sh; do not run it directly" >&2
-	exit 1
+	main "$@"
+	exit $?
 fi

@@ -78,6 +78,11 @@ determine_period_dates() {
 		fi
 	fi
 
+	if [[ "${PERIOD_START}" > "${PERIOD_END}" ]]; then
+		echo "determine_period_dates:: start date ${PERIOD_START} is after end date ${PERIOD_END}" >&2
+		return 1
+	fi
+
 	return 0
 }
 

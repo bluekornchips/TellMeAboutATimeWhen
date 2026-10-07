@@ -29,6 +29,7 @@ setup() {
 	source "${GIT_ROOT}/tests/helpers/bats-setup.sh"
 	bats_source_libs "${SCRIPT}"
 	export REPO_PATH
+	unset GITHUB_USER
 
 	return 0
 }
@@ -366,30 +367,39 @@ fixture_search_prs_many() {
 	unset -f gh jq
 }
 
-# resolve_github_login
-@test "resolve_github_login:: uses username-shaped AUTHOR" {
+# set_github_user
+@test "set_github_user:: uses username-shaped AUTHOR" {
 	AUTHOR="testuser"
+	GITHUB_USER=""
 
-	run resolve_github_login
-	[[ "$status" -eq 0 ]]
-	[[ "$output" == "testuser" ]]
+	set_github_user
+	[[ "${GITHUB_USER}" == "testuser" ]]
 }
 
-@test "resolve_github_login:: fails instead of using the authenticated account" {
+@test "set_github_user:: keeps an explicit GITHUB_USER" {
 	AUTHOR="Author One"
+	GITHUB_USER="octocat"
 
-	run resolve_github_login
-	[[ "$status" -eq 1 ]]
-	echo "$output" | grep -q "is not a GitHub username"
-	echo "$output" | grep -qv "authed-login"
+	set_github_user
+	[[ "${GITHUB_USER}" == "octocat" ]]
 }
 
-@test "resolve_github_login:: fails when AUTHOR is empty" {
-	AUTHOR=""
+@test "set_github_user:: fails for a display-name AUTHOR without --github-user" {
+	AUTHOR="Author One"
+	GITHUB_USER=""
 
-	run resolve_github_login
+	run set_github_user
 	[[ "$status" -eq 1 ]]
-	echo "$output" | grep -q "AUTHOR is not set"
+	echo "$output" | grep -q -- "--github-user is required"
+}
+
+@test "set_github_user:: fails when GitHub username is empty" {
+	AUTHOR=""
+	GITHUB_USER=""
+
+	run set_github_user
+	[[ "$status" -eq 1 ]]
+	echo "$output" | grep -q -- "--github-user is required"
 }
 
 # search_prs_by_involvement
@@ -542,6 +552,7 @@ fixture_search_prs_many() {
 	[[ -f "${out_root}/prs/merged/index.json" ]]
 	[[ -f "${out_root}/prs/reviewed/index.json" ]]
 	[[ -f "${out_root}/prs/commented/index.json" ]]
+	[[ -f "${out_root}/prs/.signature" ]]
 	grep -qE '"involvement"[[:space:]]*:[[:space:]]*"merged"' "${out_root}/prs/merged/index.json"
 	grep -qE '"involvement"[[:space:]]*:[[:space:]]*"reviewed"' "${out_root}/prs/reviewed/index.json"
 	grep -qE '"involvement"[[:space:]]*:[[:space:]]*"commented"' "${out_root}/prs/commented/index.json"
@@ -577,6 +588,7 @@ fixture_search_prs_many() {
 	run write_involvement_prs "${out_root}"
 	[[ "$status" -eq 0 ]]
 	[[ -f "${out_root}/prs/reviewed/index.json" ]]
+	[[ ! -f "${out_root}/prs/.signature" ]]
 	grep -q '\[\]' "${out_root}/prs/reviewed/index.json"
 	grep -qE '"number"[[:space:]]*:[[:space:]]*2' "${out_root}/prs/merged/index.json"
 	echo "$output" | grep -q "Writing empty reviewed index"
@@ -588,6 +600,177 @@ fixture_search_prs_many() {
 	run write_involvement_prs ""
 	[[ "$status" -eq 1 ]]
 	echo "$output" | grep -q "output_root is not set"
+}
+
+@test "write_involvement_prs:: reuses indexes when the signature matches" {
+	create_worktree_repo "${TEST_DIR}/repo"
+	cd "${TEST_DIR}/repo"
+	git remote add origin "https://github.com/owner/repo.git" 2>/dev/null || git remote set-url origin "https://github.com/owner/repo.git"
+
+	AUTHOR="Author One"
+	GITHUB_USER="testuser"
+	PERIOD_START="2026-09-01"
+	PERIOD_END="2026-09-14"
+	REPO_PATH="${TEST_DIR}/repo"
+	local out_root="${TEST_DIR}/out-cache"
+	local calls="${TEST_DIR}/gh-calls"
+
+	gh() {
+		case "$1 $2" in
+		"auth status") return 0 ;;
+		"pr list")
+			printf 'called\n' >>"${calls}"
+			fixture_pr_list_merged 1
+			;;
+		"search prs")
+			printf 'called\n' >>"${calls}"
+			if [[ "$*" == *"--commenter"* ]]; then
+				fixture_search_pr 1 "commented"
+			else
+				fixture_search_pr 1 "reviewed"
+			fi
+			;;
+		esac
+	}
+
+	run write_involvement_prs "${out_root}"
+	[[ "$status" -eq 0 ]]
+	[[ -f "${out_root}/prs/.signature" ]]
+	local first_calls
+	first_calls=$(wc -l <"${calls}")
+	[[ "${first_calls}" -gt 0 ]]
+
+	run write_involvement_prs "${out_root}"
+	[[ "$status" -eq 0 ]]
+	local second_calls
+	second_calls=$(wc -l <"${calls}")
+	[[ "${first_calls}" -eq "${second_calls}" ]]
+
+	unset -f gh
+}
+
+@test "write_involvement_prs:: caches empty indexes when the signature matches" {
+	create_worktree_repo "${TEST_DIR}/repo"
+	cd "${TEST_DIR}/repo"
+	git remote add origin "https://github.com/owner/repo.git" 2>/dev/null || git remote set-url origin "https://github.com/owner/repo.git"
+
+	AUTHOR="testuser"
+	GITHUB_USER="testuser"
+	PERIOD_START="2026-09-01"
+	PERIOD_END="2026-09-14"
+	REPO_PATH="${TEST_DIR}/repo"
+	local out_root="${TEST_DIR}/out-empty"
+	local calls="${TEST_DIR}/empty-calls"
+
+	gh() {
+		case "$1 $2" in
+		"auth status") return 0 ;;
+		"pr list" | "search prs")
+			printf 'called\n' >>"${calls}"
+			printf '%s\n' '[]'
+			;;
+		esac
+	}
+
+	run write_involvement_prs "${out_root}"
+	[[ "$status" -eq 0 ]]
+	[[ -f "${out_root}/prs/.signature" ]]
+	grep -q '\[\]' "${out_root}/prs/merged/index.json"
+
+	run write_involvement_prs "${out_root}"
+	[[ "$status" -eq 0 ]]
+	local call_count
+	call_count=$(wc -l <"${calls}")
+	[[ "${call_count}" -eq 3 ]]
+
+	unset -f gh
+}
+
+@test "write_involvement_prs:: refreshes indexes when the range changes" {
+	create_worktree_repo "${TEST_DIR}/repo"
+	cd "${TEST_DIR}/repo"
+	git remote add origin "https://github.com/owner/repo.git" 2>/dev/null || git remote set-url origin "https://github.com/owner/repo.git"
+
+	AUTHOR="testuser"
+	GITHUB_USER="testuser"
+	PERIOD_START="2026-09-01"
+	PERIOD_END="2026-09-14"
+	REPO_PATH="${TEST_DIR}/repo"
+	local out_root="${TEST_DIR}/out-refresh"
+
+	gh() {
+		case "$1 $2" in
+		"auth status") return 0 ;;
+		"pr list") fixture_pr_list_merged 1 ;;
+		"search prs")
+			if [[ "$*" == *"--commenter"* ]]; then
+				fixture_search_pr 1 "commented"
+			else
+				fixture_search_pr 1 "reviewed"
+			fi
+			;;
+		esac
+	}
+
+	run write_involvement_prs "${out_root}"
+	[[ "$status" -eq 0 ]]
+	grep -q '2026-09-14' "${out_root}/prs/.signature"
+
+	PERIOD_END="2026-09-30"
+	gh() {
+		case "$1 $2" in
+		"auth status") return 0 ;;
+		"pr list") fixture_pr_list_merged 9 ;;
+		"search prs")
+			if [[ "$*" == *"--commenter"* ]]; then
+				fixture_search_pr 9 "commented"
+			else
+				fixture_search_pr 8 "reviewed"
+			fi
+			;;
+		esac
+	}
+
+	run write_involvement_prs "${out_root}"
+	[[ "$status" -eq 0 ]]
+	grep -q '2026-09-30' "${out_root}/prs/.signature"
+	grep -qE '"number"[[:space:]]*:[[:space:]]*9' "${out_root}/prs/merged/index.json"
+
+	unset -f gh
+}
+
+@test "write_involvement_prs:: does not stamp a signature when a role fetch fails" {
+	create_worktree_repo "${TEST_DIR}/repo"
+	cd "${TEST_DIR}/repo"
+	git remote add origin "https://github.com/owner/repo.git" 2>/dev/null || git remote set-url origin "https://github.com/owner/repo.git"
+
+	AUTHOR="testuser"
+	GITHUB_USER="testuser"
+	PERIOD_START="2026-09-01"
+	PERIOD_END="2026-09-14"
+	REPO_PATH="${TEST_DIR}/repo"
+	local out_root="${TEST_DIR}/out-partial"
+
+	gh() {
+		case "$1 $2" in
+		"auth status") return 0 ;;
+		"pr list") fixture_pr_list_merged 2 ;;
+		"search prs")
+			if [[ "$*" == *"--reviewed-by"* ]]; then
+				echo "HTTP 403: rate limited" >&2
+				return 1
+			fi
+			fixture_search_pr 3 "commented"
+			;;
+		esac
+	}
+
+	run write_involvement_prs "${out_root}"
+	[[ "$status" -eq 0 ]]
+	[[ ! -f "${out_root}/prs/.signature" ]]
+	grep -q '\[\]' "${out_root}/prs/reviewed/index.json"
+
+	unset -f gh
 }
 
 @test "integration:: rejects direct script execution" {
