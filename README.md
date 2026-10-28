@@ -1,16 +1,17 @@
 # TellMeAboutATimeWhen
 
-Git commit analyzer that writes commit details, GitHub pull requests, and JIRA tickets for an author, then prepares a Coworker meeting window for Cursor project skills.
+Git commit analyzer that writes commit details, GitHub pull requests, JIRA tickets, and Linear issues for an author, then prepares a Coworker meeting window for Cursor project skills.
 
 ## Overview
 
-`tell-me-about.sh` analyzes commits and writes one directory per commit. GitHub, JIRA, and Coworker are enabled by default. Pass `--tools` with a comma-separated subset to narrow that set.
+`tell-me-about.sh` analyzes commits and writes one directory per commit. GitHub, JIRA, Linear, and Coworker are enabled by default. Pass `--tools` with a comma-separated subset to narrow that set.
 
 Each commit directory can contain:
 
 - `diff.txt`: Commit message, patch, and changed files
 - `pr.json`: Pull request details when `github` is enabled
 - `jira.txt`: Ticket details extracted from the commit message when `jira` is enabled
+- `linear.txt`: Issue details extracted from the commit message when `linear` is enabled
 
 When `github` is enabled, the analyzer also writes involvement PRs under `prs/`:
 
@@ -38,6 +39,7 @@ tell-me-about.sh          Orchestrator CLI, argv and pipeline
 tools/
   github.sh               Sourced GitHub helpers, not run directly
   jira.sh                 Sourced JIRA helpers, not run directly
+  linear.sh               Sourced Linear helpers, not run directly
   coworker.sh             Sourced Coworker MCP helpers, not run directly
   lib/
     git.sh                Shared git helpers
@@ -65,6 +67,7 @@ tests/
 - GitHub CLI (`gh`) when `github` is enabled
 - jq when `github` or `coworker` is enabled
 - Atlassian CLI (`acli`) when `jira` is enabled
+- curl and jq when `linear` is enabled, plus `LINEAR_API_KEY`
 - Coworker MCP in `~/.cursor/mcp.json` when `coworker` is enabled
 
 ## Install
@@ -91,7 +94,7 @@ Optional:
 - `-a, --author <author>`: Git author; defaults to git global `user.name` or `user.email`
 - `--github-user <login>`: GitHub username when `github` is enabled; required unless `--author` is a username
 - `--range <date>`: Commits since `YYYY-MM-DD`, or between two dates when a second date is given
-- `--tools <tools>`: Comma-separated subset of `jira`, `github`, `coworker`; default is all three
+- `--tools <tools>`: Comma-separated subset of `jira`, `linear`, `github`, `coworker`; default is all four
 - `-h, --help`: Show help
 
 Period dates always come from `--range`. Start must not be after end. The `coworker` tool uses that window for meetings.
@@ -118,6 +121,9 @@ TELLME_REPOS_ROOT="$HOME/repos" ./tell-me-about.sh \
 
 # GitHub and JIRA only
 ./tell-me-about.sh --repo /path/to/repo:main -a octocat --range "2026-01-01" "2026-01-31" --tools github,jira
+
+# GitHub and Linear only
+./tell-me-about.sh --repo /path/to/repo:main -a octocat --range "2026-01-01" "2026-01-31" --tools github,linear
 ```
 
 ## Output Structure
@@ -129,7 +135,8 @@ $OUTPUT_DIR/{repo_name}/{branch}/{author}/
 |-- {short_commit}/
 |   |-- diff.txt
 |   |-- pr.json
-|   `-- jira.txt
+|   |-- jira.txt
+|   `-- linear.txt
 |-- prs/
 |   |-- .signature
 |   |-- merged/index.json
@@ -154,7 +161,7 @@ Child skills write distinct report files under `updates/`:
 
 [`tools/lib/print.sh`](tools/lib/print.sh) formats the commit and meetings summary cards at the end of a run. Everything else is plain bash.
 
-- Summary stdout: `=== repo:branch, N commits ===` from `process_repo`, then `print_section` / `print_field` / `print_paths` for Commit, Diff, Jira, GitHub, PRs, Meetings, Window, Parent, Child
+- Summary stdout: `=== path:branch (N commit|commits) ===` from `process_repo`, then `print_section` / `print_field` / `print_paths` for Commit, Diff, Jira, Linear, GitHub, PRs, Meetings, Window, Parent, Child
 - Errors stderr: `echo "function:: message" >&2`
 - Separators: ASCII hyphens; width from `COLUMNS`, capped at 120
 - Summary cards always use color
@@ -182,6 +189,16 @@ acli jira auth status
 ```
 
 Needed permissions: browse projects, read issues, read comments.
+
+### Linear
+
+When `linear` is enabled, create a personal API key in [Linear Security and access](https://linear.app/settings/account/security) and export it. The helper calls the [Linear GraphQL API](https://linear.app/developers/graphql):
+
+```bash
+export LINEAR_API_KEY="lin_api_..."
+```
+
+Needed permissions: read issues and comments. Issue IDs in commit messages use Linear identifiers such as `ENG-123`.
 
 ### Coworker MCP
 
@@ -211,8 +228,10 @@ Override the MCP config path with `COWORKER_MCP_CONFIG` in tests or automation.
 ## Testing
 
 ```bash
+make
 make test
-make lint
+make syntax
+make shellcheck
 ```
 
 Suites:
@@ -228,4 +247,6 @@ Suites:
 - `COWORKER_MCP_CONFIG`: Cursor MCP JSON path; defaults to `$HOME/.cursor/mcp.json`
 - `COWORKER_TIMEZONE`: Optional IANA timezone for project skills
 - `TELLME_REPOS_ROOT`: Base directory for relative paths in `--repo`
+- `LINEAR_API_KEY`: Personal Linear API key when `linear` is enabled
+- `LINEAR_GRAPHQL_URL`: Optional GraphQL endpoint; defaults to `https://api.linear.app/graphql`
 - `COLUMNS`: Terminal width hint for summary separators; capped at 120

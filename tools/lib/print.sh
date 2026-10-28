@@ -10,6 +10,7 @@ COLOR_RESET=""
 COLOR_BOLD=""
 COLOR_COMMIT=""
 COLOR_JIRA=""
+COLOR_LINEAR=""
 COLOR_GITHUB=""
 COLOR_PATH=""
 COLOR_SEPARATOR=""
@@ -24,6 +25,7 @@ print_init() {
 	COLOR_BOLD=$'\033[1m'
 	COLOR_COMMIT=$'\033[38;5;39m'
 	COLOR_JIRA=$'\033[38;5;208m'
+	COLOR_LINEAR=$'\033[38;5;63m'
 	COLOR_GITHUB=$'\033[38;5;141m'
 	COLOR_PATH=$'\033[38;5;244m'
 	COLOR_SEPARATOR=$'\033[38;5;240m'
@@ -67,7 +69,7 @@ print_section() {
 # Inputs:
 # - $1: label
 # - $2: value
-# - $3: role, commit|jira|github|path|default
+# - $3: role, commit|jira|linear|github|path|default
 #
 # Side Effects:
 # - Writes one labeled field line to stdout
@@ -85,6 +87,7 @@ print_field() {
 	case "${role}" in
 	commit) color="${COLOR_COMMIT}${COLOR_BOLD}" ;;
 	jira) color="${COLOR_JIRA}" ;;
+	linear) color="${COLOR_LINEAR}" ;;
 	github) color="${COLOR_GITHUB}" ;;
 	esac
 

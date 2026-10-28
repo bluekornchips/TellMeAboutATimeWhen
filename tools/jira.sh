@@ -75,64 +75,6 @@ get_ticket_details_for_id() {
 	return 0
 }
 
-# Extracts unique JIRA ticket IDs from a commit message
-#
-# Inputs:
-# - $1: commit hash
-#
-# Outputs:
-# - Ticket IDs to stdout, one per line
-#
-# Returns:
-# - 0 on success
-# - 1 on failure
-extract_jira_tickets() {
-	local commit="${1:-}"
-
-	if [[ -z "${commit}" ]]; then
-		echo "extract_jira_tickets:: commit is not set" >&2
-		return 1
-	fi
-
-	local commit_message
-	if ! commit_message=$(git_cmd log -1 --format="%B" "${commit}" 2>/dev/null); then
-		echo "extract_jira_tickets:: Failed to get commit message for ${commit}" >&2
-		return 1
-	fi
-
-	local ticket_ids=()
-	local ticket_id
-	while [[ "${commit_message}" =~ ([A-Z][A-Z0-9]*-[0-9]+) ]]; do
-		ticket_id="${BASH_REMATCH[1]}"
-		if ! array_contains "${ticket_id}" "${ticket_ids[@]}"; then
-			ticket_ids+=("${ticket_id}")
-		fi
-		commit_message="${commit_message#*"${BASH_REMATCH[1]}"}"
-	done
-
-	for ticket_id in "${ticket_ids[@]}"; do
-		echo "${ticket_id}"
-	done
-
-	return 0
-}
-
-# Returns whether a JIRA artifact should be refreshed
-#
-# Inputs:
-# - $1: jira.txt path
-#
-# Returns:
-# - 0 when refresh is needed
-# - 1 when the existing file can be kept
-needs_jira_refresh() {
-	local jira_file="${1:-}"
-
-	[[ -z "${jira_file}" || ! -s "${jira_file}" ]] && return 0
-
-	return 1
-}
-
 # Writes JIRA ticket details for a commit to a single file
 #
 # Inputs:
@@ -164,33 +106,7 @@ write_jira_details() {
 
 	check_jira_dependencies || return 1
 	validate_jira_auth || return 1
-
-	local ticket_ids
-	ticket_ids=$(extract_jira_tickets "${commit}" 2>/dev/null) || return 1
-
-	if [[ -n "${ticket_ids}" ]]; then
-		if ! : >"${jira_file}"; then
-			echo "write_jira_details:: Failed to write to jira_file: ${jira_file}" >&2
-			return 1
-		fi
-
-		local ticket_id
-		local wrote=0
-		while IFS= read -r ticket_id; do
-			if [[ -n "${ticket_id}" ]]; then
-				if get_ticket_details_for_id "${ticket_id}" >>"${jira_file}"; then
-					printf '\n' >>"${jira_file}"
-					wrote=1
-				else
-					echo "write_jira_details:: Failed to fetch ticket: ${ticket_id}" >&2
-				fi
-			fi
-		done <<<"${ticket_ids}"
-
-		if [[ "${wrote}" -eq 0 ]]; then
-			rm -f "${jira_file}"
-		fi
-	fi
+	write_ticket_details "${commit}" "${jira_file}" get_ticket_details_for_id write_jira_details || return 1
 
 	return 0
 }

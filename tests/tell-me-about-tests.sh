@@ -50,7 +50,7 @@ setup() {
 	_setup || return 1
 
 	unset PERIOD_START PERIOD_END RANGE_DATE1 RANGE_DATE2 AUTHOR BRANCH REPO_PATH
-	unset CHECK_GITHUB CHECK_JIRA CHECK_COWORKER SANITIZED_AUTHOR SANITIZED_BRANCH
+	unset CHECK_GITHUB CHECK_JIRA CHECK_LINEAR CHECK_COWORKER SANITIZED_AUTHOR SANITIZED_BRANCH
 	unset GITHUB_USER
 	print_init
 	COMMITS=()
@@ -89,6 +89,10 @@ EOF
 	run "${SCRIPT}" --jira
 	[[ "${status}" -ne 0 ]]
 	echo "${output}" | grep -q "Unknown option '--jira'"
+
+	run "${SCRIPT}" --linear
+	[[ "${status}" -ne 0 ]]
+	echo "${output}" | grep -q "Unknown option '--linear'"
 }
 
 @test "main:: fails when --tools has no value" {
@@ -140,6 +144,7 @@ EOF
 
 @test "validate_enabled_tools:: accepts --github-user with a display-name author" {
 	CHECK_JIRA="false"
+	CHECK_LINEAR="false"
 	CHECK_GITHUB="true"
 	CHECK_COWORKER="false"
 	AUTHOR="Test User"
@@ -172,6 +177,7 @@ EOF
 
 	[[ "${CHECK_GITHUB}" == "true" ]]
 	[[ "${CHECK_JIRA}" == "true" ]]
+	[[ "${CHECK_LINEAR}" == "true" ]]
 	[[ "${CHECK_COWORKER}" == "true" ]]
 }
 
@@ -180,6 +186,16 @@ EOF
 
 	[[ "${CHECK_GITHUB}" == "false" ]]
 	[[ "${CHECK_JIRA}" == "true" ]]
+	[[ "${CHECK_LINEAR}" == "false" ]]
+	[[ "${CHECK_COWORKER}" == "true" ]]
+}
+
+@test "configure_tools:: enables linear without jira" {
+	configure_tools "linear,coworker"
+
+	[[ "${CHECK_GITHUB}" == "false" ]]
+	[[ "${CHECK_JIRA}" == "false" ]]
+	[[ "${CHECK_LINEAR}" == "true" ]]
 	[[ "${CHECK_COWORKER}" == "true" ]]
 }
 
@@ -198,11 +214,14 @@ EOF
 # validate_enabled_tools
 @test "validate_enabled_tools:: succeeds when enabled tools pass checks" {
 	CHECK_JIRA="true"
+	CHECK_LINEAR="true"
 	CHECK_GITHUB="true"
 	CHECK_COWORKER="true"
 
 	check_jira_dependencies() { return 0; }
 	validate_jira_auth() { return 0; }
+	check_linear_dependencies() { return 0; }
+	validate_linear_auth() { return 0; }
 	check_github_dependencies() { return 0; }
 	check_coworker_dependencies() { return 0; }
 	resolve_mcp_config() {
@@ -217,11 +236,16 @@ EOF
 
 @test "validate_enabled_tools:: skips disabled tools" {
 	CHECK_JIRA="false"
+	CHECK_LINEAR="false"
 	CHECK_GITHUB="false"
 	CHECK_COWORKER="false"
 
 	check_jira_dependencies() {
 		echo "check_jira_dependencies:: should not run" >&2
+		return 1
+	}
+	check_linear_dependencies() {
+		echo "check_linear_dependencies:: should not run" >&2
 		return 1
 	}
 	check_github_dependencies() {
@@ -240,6 +264,7 @@ EOF
 
 @test "validate_enabled_tools:: fails when jira dependencies are missing" {
 	CHECK_JIRA="true"
+	CHECK_LINEAR="false"
 	CHECK_GITHUB="false"
 	CHECK_COWORKER="false"
 
@@ -254,8 +279,26 @@ EOF
 	echo "${output}" | grep -q "Atlassian CLI (acli) is not installed"
 }
 
+@test "validate_enabled_tools:: fails when linear dependencies are missing" {
+	CHECK_JIRA="false"
+	CHECK_LINEAR="true"
+	CHECK_GITHUB="false"
+	CHECK_COWORKER="false"
+
+	check_linear_dependencies() {
+		echo "check_linear_dependencies:: curl is required but is not installed" >&2
+		return 1
+	}
+	validate_linear_auth() { return 0; }
+
+	run validate_enabled_tools
+	[[ "${status}" -ne 0 ]]
+	echo "${output}" | grep -q "curl is required but is not installed"
+}
+
 @test "validate_enabled_tools:: fails when github is not authenticated" {
 	CHECK_JIRA="false"
+	CHECK_LINEAR="false"
 	CHECK_GITHUB="true"
 	CHECK_COWORKER="false"
 
@@ -271,6 +314,7 @@ EOF
 
 @test "validate_enabled_tools:: fails when coworker MCP is missing" {
 	CHECK_JIRA="false"
+	CHECK_LINEAR="false"
 	CHECK_GITHUB="false"
 	CHECK_COWORKER="true"
 
@@ -601,6 +645,7 @@ EOF
 	mkdir -p "${OUTPUT_PATH}"
 	CHECK_GITHUB="true"
 	CHECK_JIRA="false"
+	CHECK_LINEAR="false"
 	CHECK_COWORKER="false"
 
 	write_pr_details() {
@@ -627,6 +672,7 @@ EOF
 	mkdir -p "${OUTPUT_PATH}"
 	CHECK_GITHUB="true"
 	CHECK_JIRA="false"
+	CHECK_LINEAR="false"
 	CHECK_COWORKER="false"
 
 	write_pr_details() {
@@ -673,6 +719,7 @@ EOF
 	PERIOD_END="2030-01-01"
 	CHECK_GITHUB="true"
 	CHECK_JIRA="false"
+	CHECK_LINEAR="false"
 	CHECK_COWORKER="false"
 
 	write_pr_details() {
@@ -704,6 +751,7 @@ EOF
 	PERIOD_END="2030-01-01"
 	CHECK_GITHUB="false"
 	CHECK_JIRA="false"
+	CHECK_LINEAR="false"
 	CHECK_COWORKER="false"
 
 	write_involvement_prs() {
@@ -725,6 +773,7 @@ EOF
 	PERIOD_END="2099-01-02"
 	CHECK_GITHUB="true"
 	CHECK_JIRA="false"
+	CHECK_LINEAR="false"
 	CHECK_COWORKER="false"
 
 	write_involvement_prs() {
@@ -748,6 +797,7 @@ EOF
 	OUTPUT_PATH="${TEST_DIR}/out"
 	mkdir -p "${OUTPUT_PATH}"
 	CHECK_JIRA="true"
+	CHECK_LINEAR="false"
 	CHECK_GITHUB="false"
 	CHECK_COWORKER="false"
 
@@ -766,6 +816,66 @@ EOF
 	[[ "${status}" -eq 0 ]]
 	[[ -s "${OUTPUT_PATH}/${sha}/jira.txt" ]]
 	echo "${output}" | grep -q "Jira:"
+}
+
+@test "process_commits:: invokes linear write helpers" {
+	create_analyzer_repo "${TEST_DIR}/repo"
+	REPO_PATH="${TEST_DIR}/repo"
+	OUTPUT_PATH="${TEST_DIR}/out"
+	mkdir -p "${OUTPUT_PATH}"
+	CHECK_JIRA="false"
+	CHECK_LINEAR="true"
+	CHECK_GITHUB="false"
+	CHECK_COWORKER="false"
+
+	write_linear_details() {
+		local commit="$1"
+		local linear_file="$2"
+		printf '%s\n' 'Issue: PROJ-123' >"${linear_file}"
+		return 0
+	}
+
+	local sha
+	sha=$(git -C "${TEST_DIR}/repo" log --author="Author One" --format=%h -n 1)
+	COMMITS=("${sha}")
+
+	run process_commits
+	[[ "${status}" -eq 0 ]]
+	[[ -s "${OUTPUT_PATH}/${sha}/linear.txt" ]]
+	echo "${output}" | grep -q "Linear:"
+}
+
+@test "process_commits:: writes jira and linear artifacts together" {
+	create_analyzer_repo "${TEST_DIR}/repo"
+	REPO_PATH="${TEST_DIR}/repo"
+	OUTPUT_PATH="${TEST_DIR}/out"
+	mkdir -p "${OUTPUT_PATH}"
+	CHECK_JIRA="true"
+	CHECK_LINEAR="true"
+	CHECK_GITHUB="false"
+	CHECK_COWORKER="false"
+
+	write_jira_details() {
+		local jira_file="$2"
+		printf '%s\n' 'Ticket: PROJ-123' >"${jira_file}"
+		return 0
+	}
+	write_linear_details() {
+		local linear_file="$2"
+		printf '%s\n' 'Issue: PROJ-123' >"${linear_file}"
+		return 0
+	}
+
+	local sha
+	sha=$(git -C "${TEST_DIR}/repo" log --author="Author One" --format=%h -n 1)
+	COMMITS=("${sha}")
+
+	run process_commits
+	[[ "${status}" -eq 0 ]]
+	[[ -s "${OUTPUT_PATH}/${sha}/jira.txt" ]]
+	[[ -s "${OUTPUT_PATH}/${sha}/linear.txt" ]]
+	echo "${output}" | grep -q "Jira:"
+	echo "${output}" | grep -q "Linear:"
 }
 
 @test "process_meetings:: verifies coworker MCP and prints skill instructions" {

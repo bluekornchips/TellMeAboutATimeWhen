@@ -2,7 +2,7 @@
 name: tell-me-about-a-time-when
 description: >-
   Builds the shared TellMeAboutATimeWhen evidence set from commit files,
-  GitHub, JIRA, and Coworker meetings. Use before creating a weekly update,
+  GitHub, JIRA, Linear, and Coworker meetings. Use before creating a weekly update,
   one-on-one review, brag book, or other report from tellme output.
 ---
 
@@ -21,7 +21,7 @@ Call MCP tools directly instead of starting an additional model-powered agent. C
 1. Identify every analysis root from the supplied tellme paths. A multi-repo run produces one root per `--repo`:
    `$OUTPUT_DIR/{repo_name}/{branch}/{author}/`.
 2. For each analysis root, read every relevant commit directory under that root.
-3. Use `diff.txt`, `pr.json`, and `jira.txt` when present.
+3. Use `diff.txt`, `pr.json`, `jira.txt`, and `linear.txt` when present.
 4. Also read involvement PR indexes when present:
    `prs/merged/index.json`, `prs/reviewed/index.json`, and `prs/commented/index.json`.
    These exist even when there are no commit directories in the window.
@@ -45,7 +45,8 @@ $HOME/tellme/{repo_name}/{branch}/{author}/
 |-- {short_commit}/
 |   |-- diff.txt
 |   |-- pr.json
-|   `-- jira.txt
+|   |-- jira.txt
+|   `-- linear.txt
 |-- prs/
 |   |-- merged/index.json
 |   |-- reviewed/index.json

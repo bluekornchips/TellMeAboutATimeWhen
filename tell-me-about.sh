@@ -18,18 +18,19 @@ usage() {
 Usage: $(basename "$0") [--repo <path>:<branch> ...]
        [-a|--author <author>] [--github-user <login>]
        [--range <date> | --range <start_date> <end_date>]
-       [--tools <jira,github,coworker>]
+       [--tools <jira,linear,github,coworker>]
 
 Analyze git commits by author and save detailed information to
 commit-specific directories.
 
-Each commit is saved to: OUTPUT_DIR/REPO_NAME/BRANCH/AUTHOR/SHORT_COMMIT/
+Each commit is saved to: OUTPUT_DIR/REPO_NAME/SANITIZED_BRANCH/SANITIZED_AUTHOR/SHORT_COMMIT/
   - pr.json  : Pull request details when the github tool is enabled
   - diff.txt : Commit message and changed files
   - jira.txt : JIRA ticket details when the jira tool is enabled
+  - linear.txt : Linear issue details when the linear tool is enabled
 
 When github is enabled, involvement PRs are also written to:
-  OUTPUT_DIR/REPO_NAME/BRANCH/AUTHOR/prs/{merged,reviewed,commented}/index.json
+  OUTPUT_DIR/REPO_NAME/SANITIZED_BRANCH/SANITIZED_AUTHOR/prs/{merged,reviewed,commented}/index.json
 
 All tools are enabled by default. Use --tools with a comma-separated
 list to select a subset.
@@ -39,7 +40,7 @@ Options:
   -a, --author <author>      : Git author, defaults to git global user.name or user.email
   --github-user <login>      : GitHub username when github is enabled
   --range <date>             : Analyze commits since date, or between two dates
-  --tools <tools>            : Comma-separated subset of jira,github,coworker
+  --tools <tools>            : Comma-separated subset of jira,linear,github,coworker
   -h, --help                 : Show this help message
 
 --range is required. The coworker tool uses --range dates. Project
@@ -60,16 +61,17 @@ EOF
 # - $1: comma-separated tool names, empty enables all tools
 #
 # Side Effects:
-# - Sets CHECK_GITHUB, CHECK_JIRA, and CHECK_COWORKER
+# - Sets CHECK_GITHUB, CHECK_JIRA, CHECK_LINEAR, and CHECK_COWORKER
 #
 # Returns:
 # - 0 on success
 # - 1 when a tool name or list format is invalid
 configure_tools() {
-	local tools="${1:-jira,github,coworker}"
+	local tools="${1:-jira,linear,github,coworker}"
 
 	CHECK_GITHUB="false"
 	CHECK_JIRA="false"
+	CHECK_LINEAR="false"
 	CHECK_COWORKER="false"
 
 	if [[ "${tools}" == ,* || "${tools}" == *, || "${tools}" == *,,* ]]; then
@@ -89,12 +91,15 @@ configure_tools() {
 		jira)
 			CHECK_JIRA="true"
 			;;
+		linear)
+			CHECK_LINEAR="true"
+			;;
 		coworker)
 			CHECK_COWORKER="true"
 			;;
 		*)
 			echo "configure_tools:: Unknown tool '${tool}'" >&2
-			echo "configure_tools:: Allowed tools: jira,github,coworker" >&2
+			echo "configure_tools:: Allowed tools: jira,linear,github,coworker" >&2
 			return 1
 			;;
 		esac
@@ -116,6 +121,12 @@ validate_enabled_tools() {
 
 	if [[ "${CHECK_JIRA}" == "true" ]]; then
 		if ! check_jira_dependencies || ! validate_jira_auth; then
+			failed=1
+		fi
+	fi
+
+	if [[ "${CHECK_LINEAR}" == "true" ]]; then
+		if ! check_linear_dependencies || ! validate_linear_auth; then
 			failed=1
 		fi
 	fi
@@ -217,6 +228,49 @@ validate_repo() {
 	return 0
 }
 
+# Writes a per-commit tracker artifact when that tool is enabled
+#
+# Inputs:
+# - $1: enabled flag, true or false
+# - $2: commit hash
+# - $3: output file
+# - $4: write function name
+# - $5: tracker label for error text
+#
+# Outputs:
+# - Artifact path to stdout when the file is non-empty
+#
+# Returns:
+# - 0 on success or when disabled
+# - 1 when the write function fails
+write_commit_tracker_file() {
+	local enabled="${1:-}"
+	local commit="${2:-}"
+	local tracker_file="${3:-}"
+	local write_fn="${4:-}"
+	local tracker_label="${5:-}"
+
+	if [[ "${enabled}" != "true" ]]; then
+		return 0
+	fi
+
+	local failed=0
+	if needs_text_refresh "${tracker_file}"; then
+		if ! "${write_fn}" "${commit}" "${tracker_file}"; then
+			echo "process_commits:: Failed to write ${tracker_label} details for ${commit}" >&2
+			failed=1
+		fi
+	fi
+
+	if [[ -s "${tracker_file}" ]]; then
+		echo "${tracker_file}"
+	fi
+
+	[[ "${failed}" -ne 0 ]] && return 1
+
+	return 0
+}
+
 # Processes commits and writes details to output directories
 #
 # Side Effects:
@@ -238,7 +292,7 @@ process_commits() {
 	local commit_dir
 	local diff_file
 	local jira_link
-	local jira_file
+	local linear_link
 	local github_link
 	local pr_file
 	for commit in "${COMMITS[@]}"; do
@@ -264,17 +318,15 @@ process_commits() {
 		fi
 
 		jira_link=""
-		if [[ "${CHECK_JIRA}" == "true" ]]; then
-			jira_file="${commit_dir}/jira.txt"
-			if needs_jira_refresh "${jira_file}"; then
-				if ! write_jira_details "${commit}" "${jira_file}"; then
-					echo "process_commits:: Failed to write JIRA details for ${commit}" >&2
-					failed=1
-				fi
-			fi
-			if [[ -s "${jira_file}" ]]; then
-				jira_link="${jira_file}"
-			fi
+		if ! jira_link=$(write_commit_tracker_file \
+			"${CHECK_JIRA}" "${commit}" "${commit_dir}/jira.txt" write_jira_details "JIRA"); then
+			failed=1
+		fi
+
+		linear_link=""
+		if ! linear_link=$(write_commit_tracker_file \
+			"${CHECK_LINEAR}" "${commit}" "${commit_dir}/linear.txt" write_linear_details "Linear"); then
+			failed=1
 		fi
 
 		github_link=""
@@ -294,6 +346,9 @@ process_commits() {
 		print_field "Diff" "${diff_file}" "path"
 		if [[ -n "${jira_link}" ]]; then
 			print_field "Jira" "${jira_link}" "jira"
+		fi
+		if [[ -n "${linear_link}" ]]; then
+			print_field "Linear" "${linear_link}" "linear"
 		fi
 		if [[ -n "${github_link}" ]]; then
 			print_field "GitHub" "${github_link}" "github"
@@ -380,7 +435,7 @@ apply_repo() {
 #
 # Side Effects:
 # - Sets REPO_PATH, BRANCH, REPO_NAME, COMMITS, OUTPUT_PATH, and sanitized names
-# - Prints === spec, N commit or commits === after commits are collected
+# - Prints === spec (N commit|commits) === after commits are collected
 # - Creates commit and meeting output directories
 #
 # Returns:
@@ -426,7 +481,7 @@ process_repo() {
 	return 0
 }
 
-# Collects PRs the author merged, reviewed, or commented on in the period
+# Collects PRs the GitHub user merged, reviewed, or commented on in the period
 #
 # Side Effects:
 # - Creates OUTPUT_PATH/prs/{merged,reviewed,commented}/ when missing
@@ -466,7 +521,7 @@ process_involvement_prs() {
 # Loads shared print, git, util, commits, and tool libraries relative to this script
 #
 # Side Effects:
-# - Sources tools/lib/*.sh and tools/{github,jira,coworker}.sh into the current shell
+# - Sources tools/lib/*.sh and tools/{github,jira,linear,coworker}.sh into the current shell
 #
 # Returns:
 # - 0 on success
@@ -496,6 +551,7 @@ _setup() {
 	for tool_lib in \
 		"${script_dir}/tools/github.sh" \
 		"${script_dir}/tools/jira.sh" \
+		"${script_dir}/tools/linear.sh" \
 		"${script_dir}/tools/coworker.sh"; do
 		if [[ ! -f "${tool_lib}" ]]; then
 			echo "_setup:: tool library not found: ${tool_lib}" >&2
@@ -547,7 +603,7 @@ main() {
 			;;
 		--tools)
 			if [[ -z "${2:-}" || "$2" == -* ]]; then
-				echo "main:: --tools requires a comma-separated list of jira,github,coworker" >&2
+				echo "main:: --tools requires a comma-separated list of jira,linear,github,coworker" >&2
 				return 1
 			fi
 			tools="$2"
