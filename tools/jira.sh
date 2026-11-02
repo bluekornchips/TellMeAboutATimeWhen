@@ -46,7 +46,8 @@ EOF
 #
 # Returns:
 # - 0 on success
-# - 1 on failure
+# - 1 when ticket_id is missing
+# - 2 when acli workitem view fails, treated as not-found after startup auth
 get_ticket_details_for_id() {
 	local ticket_id="$1"
 
@@ -57,8 +58,7 @@ get_ticket_details_for_id() {
 
 	local ticket_output
 	if ! ticket_output=$(acli jira workitem view "${ticket_id}" 2>/dev/null); then
-		echo "get_ticket_details_for_id:: Failed to retrieve ticket details for: ${ticket_id}" >&2
-		return 1
+		return 2
 	fi
 
 	echo "${ticket_output}"
@@ -97,15 +97,6 @@ write_jira_details() {
 		return 1
 	fi
 
-	local commit_dir
-	commit_dir=$(dirname "${jira_file}")
-	if [[ ! -d "${commit_dir}" ]]; then
-		echo "write_jira_details:: Commit directory does not exist: ${commit_dir}" >&2
-		return 1
-	fi
-
-	check_jira_dependencies || return 1
-	validate_jira_auth || return 1
 	write_ticket_details "${commit}" "${jira_file}" get_ticket_details_for_id write_jira_details || return 1
 
 	return 0

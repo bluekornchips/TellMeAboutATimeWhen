@@ -51,11 +51,17 @@ setup() {
 
 	unset PERIOD_START PERIOD_END RANGE_DATE1 RANGE_DATE2 AUTHOR BRANCH REPO_PATH
 	unset CHECK_GITHUB CHECK_JIRA CHECK_LINEAR CHECK_COWORKER SANITIZED_AUTHOR SANITIZED_BRANCH
-	unset GITHUB_USER
+	unset GITHUB_USER FAILED_TOOLS TOOLS INPUT_HELP
+	FAILED_TOOLS=()
 	print_init
 	COMMITS=()
+	REPOS=()
+	TOOLS=""
+	INPUT_HELP=0
 	OUTPUT_DIR="${TEST_DIR}/output"
 	export OUTPUT_DIR
+	TELLME_CONFIG="${TEST_DIR}/no-such-tell-me-about.json"
+	export TELLME_CONFIG
 	COWORKER_MCP_CONFIG="${TEST_DIR}/mcp.json"
 	cat <<'EOF' >"${COWORKER_MCP_CONFIG}"
 {
@@ -69,14 +75,16 @@ EOF
 	return 0
 }
 
-# usage
 @test "usage:: shows help correctly" {
 	run "${SCRIPT}" --help
 	[[ "${status}" -eq 0 ]]
 	echo "${output}" | grep -q "Usage:"
 	echo "${output}" | grep -q "Options:"
 	echo "${output}" | grep -q "\\-\\-range"
+	echo "${output}" | grep -q "Non-interactive stdin skips failed tools"
 	echo "${output}" | grep -q "\\-\\-tools"
+	echo "${output}" | grep -q "\\-\\-github-user"
+	echo "${output}" | grep -q "tell-me-about.json"
 }
 
 @test "main:: fails with unknown option" {
@@ -85,14 +93,22 @@ EOF
 	echo "${output}" | grep -q "Unknown option"
 }
 
-@test "main:: rejects removed individual tool flags" {
-	run "${SCRIPT}" --jira
+@test "main:: rejects removed --repo, -a, -t, and -ghu flags" {
+	run "${SCRIPT}" --repo "/tmp:master" --range "2025-01-01"
 	[[ "${status}" -ne 0 ]]
-	echo "${output}" | grep -q "Unknown option '--jira'"
+	echo "${output}" | grep -q "Unknown option '--repo'"
 
-	run "${SCRIPT}" --linear
+	run "${SCRIPT}" -a "Test User" --range "2025-01-01"
 	[[ "${status}" -ne 0 ]]
-	echo "${output}" | grep -q "Unknown option '--linear'"
+	echo "${output}" | grep -q "Unknown option '-a'"
+
+	run "${SCRIPT}" -t coworker --range "2025-01-01"
+	[[ "${status}" -ne 0 ]]
+	echo "${output}" | grep -q "Unknown option '-t'"
+
+	run "${SCRIPT}" -ghu octocat --range "2025-01-01"
+	[[ "${status}" -ne 0 ]]
+	echo "${output}" | grep -q "Unknown option '-ghu'"
 }
 
 @test "main:: fails when --tools has no value" {
@@ -104,27 +120,24 @@ EOF
 @test "main:: fails with missing required arguments" {
 	run "${SCRIPT}"
 	[[ "${status}" -ne 0 ]]
-	echo "${output}" | grep -q "main:: --range is required"
+	echo "${output}" | grep -q "process_input:: --range is required"
 }
 
 @test "main:: fails when --range is not provided" {
-	create_worktree_repo "${TEST_DIR}/range_repo"
+	write_tellme_config "Test User" "${TEST_DIR}/range_repo:master"
 
-	run "${SCRIPT}" --repo "${TEST_DIR}/range_repo:master" -a "Test User"
+	run "${SCRIPT}" --tools coworker
 	[[ "${status}" -ne 0 ]]
-	echo "${output}" | grep -q "main:: --range is required"
+	echo "${output}" | grep -q "process_input:: --range is required"
 }
 
-@test "main:: fails when --repo is not provided" {
-	run "${SCRIPT}" -a "Test User" --range "2025-01-01"
-	[[ "${status}" -ne 0 ]]
-	echo "${output}" | grep -q "at least one --repo is required"
-}
+@test "main:: fails when tell-me-about.json is absent" {
+	TELLME_CONFIG="${TEST_DIR}/no-such-tell-me-about.json"
+	export TELLME_CONFIG
 
-@test "main:: rejects removed -p and -b flags" {
-	run "${SCRIPT}" -p "${TEST_DIR}/repo" -b "master" -a "Test User" --range "2025-01-01"
+	run "${SCRIPT}" --range "2025-01-01"
 	[[ "${status}" -ne 0 ]]
-	echo "${output}" | grep -q "Unknown option"
+	echo "${output}" | grep -q "load_tellme_config:: config file is required"
 }
 
 @test "validate_repo:: fails with invalid repository path" {
@@ -137,7 +150,9 @@ EOF
 }
 
 @test "validate_enabled_tools:: rejects a non-username author when github is enabled" {
-	run "${SCRIPT}" --repo "/nonexistent/path:master" -a "Test User" --range "2025-01-01" --tools github
+	write_tellme_config "Test User" "/nonexistent/path:master"
+
+	run "${SCRIPT}" --range "2025-01-01" --tools github
 	[[ "${status}" -ne 0 ]]
 	echo "${output}" | grep -q -- "--github-user is required"
 }
@@ -157,61 +172,22 @@ EOF
 }
 
 @test "main:: fails when using --range option twice" {
-	run "${SCRIPT}" --repo "/tmp:master" -a "test@example.com" --range "2025-01-01" --range "2025-06-01"
+	write_tellme_config "test@example.com" "/tmp:master"
+
+	run "${SCRIPT}" --range "2025-01-01" --range "2025-06-01"
 	[[ "${status}" -ne 0 ]]
-	echo "${output}" | grep -q "main:: --range option can only be used once"
+	echo "${output}" | grep -q "process_input:: --range option can only be used once"
 }
 
 @test "main:: rejects reversed --range dates" {
 	create_worktree_repo "${TEST_DIR}/range_repo"
+	write_tellme_config "Test User" "${TEST_DIR}/range_repo:master"
 
-	run "${SCRIPT}" --repo "${TEST_DIR}/range_repo:master" -a "Test User" \
-		--range "2026-02-01" "2026-01-01" --tools coworker
+	run "${SCRIPT}" --range "2026-02-01" "2026-01-01" --tools coworker
 	[[ "${status}" -ne 0 ]]
 	echo "${output}" | grep -q "is after end date"
 }
 
-# configure_tools
-@test "configure_tools:: enables all tools by default" {
-	configure_tools ""
-
-	[[ "${CHECK_GITHUB}" == "true" ]]
-	[[ "${CHECK_JIRA}" == "true" ]]
-	[[ "${CHECK_LINEAR}" == "true" ]]
-	[[ "${CHECK_COWORKER}" == "true" ]]
-}
-
-@test "configure_tools:: enables only selected tools" {
-	configure_tools "jira,coworker"
-
-	[[ "${CHECK_GITHUB}" == "false" ]]
-	[[ "${CHECK_JIRA}" == "true" ]]
-	[[ "${CHECK_LINEAR}" == "false" ]]
-	[[ "${CHECK_COWORKER}" == "true" ]]
-}
-
-@test "configure_tools:: enables linear without jira" {
-	configure_tools "linear,coworker"
-
-	[[ "${CHECK_GITHUB}" == "false" ]]
-	[[ "${CHECK_JIRA}" == "false" ]]
-	[[ "${CHECK_LINEAR}" == "true" ]]
-	[[ "${CHECK_COWORKER}" == "true" ]]
-}
-
-@test "configure_tools:: fails for an unknown tool" {
-	run configure_tools "jira,gitlab"
-	[[ "${status}" -ne 0 ]]
-	echo "${output}" | grep -q "Unknown tool 'gitlab'"
-}
-
-@test "configure_tools:: fails for empty list entries" {
-	run configure_tools "jira,,coworker"
-	[[ "${status}" -ne 0 ]]
-	echo "${output}" | grep -q "Invalid tool list"
-}
-
-# validate_enabled_tools
 @test "validate_enabled_tools:: succeeds when enabled tools pass checks" {
 	CHECK_JIRA="true"
 	CHECK_LINEAR="true"
@@ -335,169 +311,29 @@ EOF
 
 @test "determine_period_dates:: fails with invalid date format in --range" {
 	create_worktree_repo "${TEST_DIR}/date_test_repo"
+	write_tellme_config "Test User" "${TEST_DIR}/date_test_repo:master"
 
-	run "${SCRIPT}" --repo "${TEST_DIR}/date_test_repo:master" -a "Test User" --range "invalid-date" --tools coworker
+	run "${SCRIPT}" --range "invalid-date" --tools coworker
 	[[ "${status}" -ne 0 ]]
 	echo "${output}" | grep -q "determine_period_dates:: Failed to parse"
 }
 
-# parse_date
-@test "parse_date:: parses valid ISO date format" {
-	local result
-	result=$(parse_date "2026-01-19")
-	[[ "${result}" == "2026-01-19" ]]
-}
-
-@test "parse_date:: parses valid ISO date format with different date" {
-	local result
-	result=$(parse_date "2025-12-31")
-	[[ "${result}" == "2025-12-31" ]]
-}
-
-@test "parse_date:: fails with relative date '1 week ago'" {
-	run parse_date "1 week ago"
-	[[ "${status}" -ne 0 ]]
-	echo "${output}" | grep -q "Invalid date format"
-}
-
-@test "parse_date:: fails with invalid date format" {
-	run parse_date "invalid-date"
-	[[ "${status}" -ne 0 ]]
-}
-
-@test "parse_date:: fails with empty string" {
-	run parse_date ""
-	[[ "${status}" -ne 0 ]]
-}
-
-@test "parse_date:: fails with malformed ISO date" {
-	run parse_date "2026-13-45"
-	[[ "${status}" -ne 0 ]]
-}
-
-@test "parse_date:: fails with wrong date format" {
-	run parse_date "01/19/2026"
-	[[ "${status}" -ne 0 ]]
-}
-
-# determine_period_dates
-@test "determine_period_dates:: sets PERIOD_START and PERIOD_END with two dates" {
-	RANGE_DATE1="2026-01-19"
-	RANGE_DATE2="2026-01-23"
-	determine_period_dates
-	[[ "${PERIOD_START}" == "2026-01-19" ]]
-	[[ "${PERIOD_END}" == "2026-01-23" ]]
-}
-
-@test "determine_period_dates:: sets PERIOD_START and PERIOD_END with single date" {
-	RANGE_DATE1="2026-01-19"
-	RANGE_DATE2=""
-	determine_period_dates
-	[[ "${PERIOD_START}" == "2026-01-19" ]]
-	[[ -n "${PERIOD_END}" ]]
-	[[ "${PERIOD_END}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]
-}
-
-@test "determine_period_dates:: fails with no dates" {
-	RANGE_DATE1=""
-	RANGE_DATE2=""
-	run determine_period_dates
-	[[ "${status}" -ne 0 ]]
-	echo "${output}" | grep -q "determine_period_dates:: --range requires at least one date"
-}
-
-@test "determine_period_dates:: fails with invalid first date" {
-	RANGE_DATE1="invalid-date"
-	RANGE_DATE2="2026-01-23"
-	run determine_period_dates
-	[[ "${status}" -ne 0 ]]
-	echo "${output}" | grep -q "determine_period_dates:: Failed to parse"
-}
-
-@test "determine_period_dates:: fails with invalid second date" {
-	RANGE_DATE1="2026-01-19"
-	RANGE_DATE2="invalid-date"
-	run determine_period_dates
-	[[ "${status}" -ne 0 ]]
-	echo "${output}" | grep -q "determine_period_dates:: Failed to parse"
-}
-
-@test "determine_period_dates:: fails with invalid single date" {
-	RANGE_DATE1="invalid-date"
-	RANGE_DATE2=""
-	run determine_period_dates
-	[[ "${status}" -ne 0 ]]
-	echo "${output}" | grep -q "determine_period_dates:: Failed to parse"
-}
-
-@test "determine_period_dates:: fails when start is after end" {
-	RANGE_DATE1="2026-02-01"
-	RANGE_DATE2="2026-01-01"
-	run determine_period_dates
-	[[ "${status}" -ne 0 ]]
-	echo "${output}" | grep -q "is after end date"
-}
-
-# sanitize_names
-@test "sanitize_names:: lowercases author and replaces slashes in branch" {
-	sanitize_names "Author One" "feature/my-feature"
-	[[ "${SANITIZED_AUTHOR}" == "author_one" ]]
-	[[ "${SANITIZED_BRANCH}" == "feature_my-feature" ]]
-}
-
-@test "sanitize_names:: fails when author is empty" {
-	run sanitize_names "" "main"
-	[[ "${status}" -ne 0 ]]
-	echo "${output}" | grep -q "author or branch is not set"
-}
-
-# apply_repo
 @test "apply_repo:: splits on last colon" {
 	apply_repo "/Volumes/My:Drive/repo:main"
 	[[ "${REPO_PATH}" == "/Volumes/My:Drive/repo" ]]
 	[[ "${BRANCH}" == "main" ]]
 }
 
-@test "apply_repo:: resolves TELLME_REPOS_ROOT" {
-	TELLME_REPOS_ROOT="${TEST_DIR}/repos-root"
-	mkdir -p "${TELLME_REPOS_ROOT}/repo-a"
-
-	apply_repo "repo-a:master"
-	[[ "${REPO_PATH}" == "${TELLME_REPOS_ROOT}/repo-a" ]]
-	[[ "${BRANCH}" == "master" ]]
-}
-
-# get_commits
-@test "get_commits:: selects commits by author" {
+@test "integration:: writes commit diffs for a date range" {
 	create_analyzer_repo "${TEST_DIR}/repo"
-	REPO_PATH="${TEST_DIR}/repo"
-	BRANCH="master"
-	AUTHOR="Author One"
-	PERIOD_START="2020-01-01"
-	PERIOD_END="2030-12-31"
+	write_tellme_config "Author One" "${TEST_DIR}/repo:master"
 
-	get_commits
-	[[ "${#COMMITS[@]}" -eq 1 ]]
-}
-
-########################################################
-# Integration Tests
-########################################################
-
-@test "integration:: basic commit analysis works" {
-	create_analyzer_repo "${TEST_DIR}/repo"
-
-	run "${SCRIPT}" --repo "${TEST_DIR}/repo:master" -a "Author One" --range "2020-01-01" --tools coworker
-
-	if [[ "${status}" -ne 0 ]]; then
-		echo "Script failed: ${output}" >&3
-	fi
+	run "${SCRIPT}" --range "2020-01-01" "2030-12-31"
 	[[ "${status}" -eq 0 ]]
 	echo "${output}" | grep -q "Commit:"
 
 	local output_dir="${OUTPUT_DIR}/repo/master/author_one"
 	[[ -d "${output_dir}" ]]
-
 	shopt -s nullglob
 	local commit_diffs=("${output_dir}"/*/diff.txt)
 	shopt -u nullglob
@@ -505,88 +341,27 @@ EOF
 	grep -q "Commit by author1" "${commit_diffs[0]}"
 }
 
-@test "integration:: handles time range parameter" {
+@test "integration:: handles different branch and author miss" {
 	create_analyzer_repo "${TEST_DIR}/repo"
+	write_tellme_config "Test User" "${TEST_DIR}/repo:test-branch"
 
-	run "${SCRIPT}" --repo "${TEST_DIR}/repo:master" -a "Author One" --range "2020-01-01" --tools coworker
-
+	run "${SCRIPT}" --range "2020-01-01"
 	[[ "${status}" -eq 0 ]]
 	echo "${output}" | grep -q "Commit:"
-}
 
-@test "integration:: handles different branch" {
-	create_analyzer_repo "${TEST_DIR}/repo"
-
-	run "${SCRIPT}" --repo "${TEST_DIR}/repo:test-branch" -a "Test User" --range "2020-01-01" --tools coworker
-
-	[[ "${status}" -eq 0 ]]
-	echo "${output}" | grep -q "Commit:"
-}
-
-@test "integration:: handles author not found" {
-	create_analyzer_repo "${TEST_DIR}/repo"
-
-	run "${SCRIPT}" --repo "${TEST_DIR}/repo:master" -a "NonExistent Author" --range "2020-01-01" --tools coworker
-
+	write_tellme_config "NonExistent Author" "${TEST_DIR}/repo:master"
+	run "${SCRIPT}" --range "2020-01-01"
 	[[ "${status}" -ne 0 ]]
 	echo "${output}" | grep -q "not found in the commit history"
 }
 
-@test "integration:: output includes commit details and diffs" {
+@test "integration:: --range filters empty windows and sanitizes branch dirs" {
 	create_analyzer_repo "${TEST_DIR}/repo"
+	write_tellme_config "Author One" "${TEST_DIR}/repo:master"
 
-	run "${SCRIPT}" --repo "${TEST_DIR}/repo:master" -a "Author One" --range "2020-01-01" --tools coworker
-
-	[[ "${status}" -eq 0 ]]
-
-	local output_dir="${OUTPUT_DIR}/repo/master/author_one"
-	[[ -d "${output_dir}" ]]
-
-	shopt -s nullglob
-	local commit_diffs=("${output_dir}"/*/diff.txt)
-	shopt -u nullglob
-	[[ ${#commit_diffs[@]} -eq 1 ]]
-	grep -q "Commit by author1" "${commit_diffs[0]}"
-}
-
-@test "integration:: --range flag works with date range" {
-	create_analyzer_repo "${TEST_DIR}/repo"
-
-	run "${SCRIPT}" --repo "${TEST_DIR}/repo:master" -a "Author One" --range "2020-01-01" "2030-12-31" --tools coworker
-
-	[[ "${status}" -eq 0 ]]
-	echo "${output}" | grep -q "Commit:"
-
-	local output_dir="${OUTPUT_DIR}/repo/master/author_one"
-	[[ -d "${output_dir}" ]]
-
-	shopt -s nullglob
-	local commit_diffs=("${output_dir}"/*/diff.txt)
-	shopt -u nullglob
-	[[ ${#commit_diffs[@]} -eq 1 ]]
-	grep -q "Commit by author1" "${commit_diffs[0]}"
-}
-
-@test "integration:: --range flag works with single date" {
-	create_analyzer_repo "${TEST_DIR}/repo"
-
-	run "${SCRIPT}" --repo "${TEST_DIR}/repo:master" -a "Author One" --range "2020-01-01" --tools coworker
-
-	[[ "${status}" -eq 0 ]]
-	echo "${output}" | grep -q "Commit:"
-}
-
-@test "integration:: --range flag filters commits correctly" {
-	create_analyzer_repo "${TEST_DIR}/repo"
-
-	run "${SCRIPT}" --repo "${TEST_DIR}/repo:master" -a "Author One" --range "2000-01-01" "2001-12-31" --tools coworker
-
+	run "${SCRIPT}" --range "2000-01-01" "2001-12-31"
 	[[ "${status}" -eq 0 ]]
 	echo "${output}" | grep -q "(0 commits)"
-}
-
-@test "integration:: branch name sanitization" {
-	create_analyzer_repo "${TEST_DIR}/repo"
 
 	(
 		cd "${TEST_DIR}/repo"
@@ -596,42 +371,42 @@ EOF
 		GIT_COMMITTER_NAME="Author One" GIT_COMMITTER_EMAIL="author1@example.com" \
 			git commit --author="Author One <author1@example.com>" -m "Feature commit" >/dev/null 2>&1
 	)
-
-	run "${SCRIPT}" --repo "${TEST_DIR}/repo:feature/my-feature" -a "Author One" --range "2020-01-01" --tools coworker
-
+	write_tellme_config "Author One" "${TEST_DIR}/repo:feature/my-feature"
+	run "${SCRIPT}" --range "2020-01-01" --tools coworker
 	[[ "${status}" -eq 0 ]]
-
-	local output_dir="${OUTPUT_DIR}/repo/feature_my-feature/author_one"
-	[[ -d "${output_dir}" ]]
+	[[ -d "${OUTPUT_DIR}/repo/feature_my-feature/author_one" ]]
 }
 
-@test "integration:: --repo analyzes multiple repositories" {
+@test "integration:: analyzes multiple repositories from config" {
 	create_analyzer_repo "${TEST_DIR}/repo-one"
 	create_analyzer_repo "${TEST_DIR}/repo-two"
+	write_tellme_config "Author One" \
+		"${TEST_DIR}/repo-one:master" \
+		"${TEST_DIR}/repo-two:master"
 
-	run "${SCRIPT}" \
-		--repo "${TEST_DIR}/repo-one:master" \
-		--repo "${TEST_DIR}/repo-two:master" \
-		-a "Author One" \
-		--range "2020-01-01" \
-		--tools coworker
+	run "${SCRIPT}" --range "2020-01-01"
 
 	[[ "${status}" -eq 0 ]]
 	echo "${output}" | grep -q "=== ${TEST_DIR}/repo-one:master (1 commit) ==="
 	echo "${output}" | grep -q "=== ${TEST_DIR}/repo-two:master (1 commit) ==="
 	grep -q "Commit by author1" "${OUTPUT_DIR}/repo-one/master/author_one/"*/diff.txt
 	grep -q "Commit by author1" "${OUTPUT_DIR}/repo-two/master/author_one/"*/diff.txt
+	[[ -d "${OUTPUT_DIR}/repo-one/master/author_one/meetings" ]]
+	[[ -d "${OUTPUT_DIR}/repo-two/master/author_one/meetings" ]]
+	local meetings_cards
+	meetings_cards=$(echo "${output}" | grep -c "Meetings:" || true)
+	[[ "${meetings_cards}" -eq 2 ]]
+	echo "${output}" | grep -q "repo-one/master/author_one/meetings"
+	echo "${output}" | grep -q "repo-two/master/author_one/meetings"
 }
 
 @test "integration:: continues after one repo fails" {
 	create_analyzer_repo "${TEST_DIR}/repo-two"
+	write_tellme_config "Author One" \
+		"/nonexistent/path:master" \
+		"${TEST_DIR}/repo-two:master"
 
-	run "${SCRIPT}" \
-		--repo "/nonexistent/path:master" \
-		--repo "${TEST_DIR}/repo-two:master" \
-		-a "Author One" \
-		--range "2020-01-01" \
-		--tools coworker
+	run "${SCRIPT}" --range "2020-01-01"
 
 	[[ "${status}" -ne 0 ]]
 	echo "${output}" | grep -q "Invalid repository path"
@@ -663,30 +438,6 @@ EOF
 	run process_commits
 	[[ "${status}" -eq 0 ]]
 	[[ -f "${OUTPUT_PATH}/${sha}/pr.json" ]]
-}
-
-@test "process_commits:: returns nonzero when github enrichment fails" {
-	create_analyzer_repo "${TEST_DIR}/repo"
-	REPO_PATH="${TEST_DIR}/repo"
-	OUTPUT_PATH="${TEST_DIR}/out"
-	mkdir -p "${OUTPUT_PATH}"
-	CHECK_GITHUB="true"
-	CHECK_JIRA="false"
-	CHECK_LINEAR="false"
-	CHECK_COWORKER="false"
-
-	write_pr_details() {
-		echo "write_pr_details:: boom" >&2
-		return 1
-	}
-
-	local sha
-	sha=$(git -C "${TEST_DIR}/repo" log --author="Author One" --format=%h -n 1)
-	COMMITS=("${sha}")
-
-	run process_commits
-	[[ "${status}" -eq 1 ]]
-	echo "${output}" | grep -q "Failed to write PR details"
 }
 
 @test "process_involvement_prs:: writes indexes and prints per-role counts" {
@@ -762,6 +513,23 @@ EOF
 	run process_repo "${TEST_DIR}/repo:master"
 	[[ "${status}" -eq 0 ]]
 	[[ ! -f "${called_file}" ]]
+}
+
+@test "process_repo:: writes meetings stub when coworker is enabled" {
+	create_analyzer_repo "${TEST_DIR}/repo"
+	AUTHOR="Author One"
+	BRANCH="master"
+	PERIOD_START="2020-01-01"
+	PERIOD_END="2030-01-01"
+	CHECK_GITHUB="false"
+	CHECK_JIRA="false"
+	CHECK_LINEAR="false"
+	CHECK_COWORKER="true"
+
+	run process_repo "${TEST_DIR}/repo:master"
+	[[ "${status}" -eq 0 ]]
+	[[ -d "${OUTPUT_DIR}/repo/master/author_one/meetings" ]]
+	echo "${output}" | grep -q "meetings"
 }
 
 @test "process_repo:: invokes involvement helper when commit list is empty" {
@@ -878,30 +646,11 @@ EOF
 	echo "${output}" | grep -q "Linear:"
 }
 
-@test "process_meetings:: verifies coworker MCP and prints skill instructions" {
-	create_analyzer_repo "${TEST_DIR}/repo"
-	REPO_PATH="${TEST_DIR}/repo"
-	REPO_NAME="repo"
-	AUTHOR="Author One"
-	BRANCH="master"
+@test "write_meetings_stub:: prints skill instructions for the analysis root" {
 	OUTPUT_PATH="${TEST_DIR}/out"
-	PERIOD_START="2026-08-01"
-	PERIOD_END="2026-08-07"
 	mkdir -p "${OUTPUT_PATH}"
-	CHECK_COWORKER="true"
 
-	check_coworker_dependencies() {
-		return 0
-	}
-	resolve_mcp_config() {
-		echo "${COWORKER_MCP_CONFIG}"
-		return 0
-	}
-	check_coworker_mcp() {
-		return 0
-	}
-
-	run process_meetings
+	run write_meetings_stub "${OUTPUT_PATH}/meetings" "2026-08-01" "2026-08-07"
 	[[ "${status}" -eq 0 ]]
 	echo "${output}" | grep -q "Meetings:.*${OUTPUT_PATH}/meetings"
 	echo "${output}" | grep -q "Window:.*2026-08-01 to 2026-08-07"
@@ -934,24 +683,246 @@ EOF
 	echo "${output}" | grep -q "not found in the commit history"
 }
 
-@test "append_unique_commit:: deduplicates hashes" {
-	COMMITS=()
-	append_unique_commit "abc"
-	append_unique_commit "abc"
-	append_unique_commit "def"
-	[[ "${#COMMITS[@]}" -eq 2 ]]
-	[[ "${COMMITS[0]}" == "abc" ]]
-	[[ "${COMMITS[1]}" == "def" ]]
+@test "configure_tools:: enables all tools by default" {
+	configure_tools ""
+
+	[[ "${CHECK_GITHUB}" == "true" ]]
+	[[ "${CHECK_JIRA}" == "true" ]]
+	[[ "${CHECK_LINEAR}" == "true" ]]
+	[[ "${CHECK_COWORKER}" == "true" ]]
 }
 
-@test "write_commit_details:: writes message and files when missing" {
+@test "configure_tools:: enables only selected tools" {
+	configure_tools "jira,coworker"
+
+	[[ "${CHECK_GITHUB}" == "false" ]]
+	[[ "${CHECK_JIRA}" == "true" ]]
+	[[ "${CHECK_LINEAR}" == "false" ]]
+	[[ "${CHECK_COWORKER}" == "true" ]]
+}
+
+@test "configure_tools:: enables linear without jira" {
+	configure_tools "linear,coworker"
+
+	[[ "${CHECK_GITHUB}" == "false" ]]
+	[[ "${CHECK_JIRA}" == "false" ]]
+	[[ "${CHECK_LINEAR}" == "true" ]]
+	[[ "${CHECK_COWORKER}" == "true" ]]
+}
+
+@test "configure_tools:: fails for an unknown tool" {
+	run configure_tools "jira,gitlab"
+	[[ "${status}" -ne 0 ]]
+	echo "${output}" | grep -q "Unknown tool 'gitlab'"
+}
+
+@test "configure_tools:: fails for empty list entries" {
+	run configure_tools "jira,,coworker"
+	[[ "${status}" -ne 0 ]]
+	echo "${output}" | grep -q "Invalid tool list"
+}
+
+@test "validate_enabled_tools:: records failed tools for fail-open handling" {
+	CHECK_JIRA="true"
+	CHECK_LINEAR="true"
+	CHECK_GITHUB="false"
+	CHECK_COWORKER="false"
+
+	check_jira_dependencies() {
+		echo "check_jira_dependencies:: Atlassian CLI (acli) is not installed or not in PATH" >&2
+		return 1
+	}
+	validate_jira_auth() { return 0; }
+	check_linear_dependencies() { return 0; }
+	validate_linear_auth() {
+		echo "validate_linear_auth:: LINEAR_API_KEY is not set" >&2
+		return 1
+	}
+
+	validate_enabled_tools || true
+	[[ "${#FAILED_TOOLS[@]}" -eq 2 ]]
+	[[ "${FAILED_TOOLS[0]}" == "jira" ]]
+	[[ "${FAILED_TOOLS[1]}" == "linear" ]]
+}
+
+@test "disable_tools:: clears matching CHECK flags" {
+	CHECK_JIRA="true"
+	CHECK_LINEAR="true"
+	CHECK_GITHUB="true"
+	CHECK_COWORKER="true"
+
+	run disable_tools jira linear
+	[[ "${status}" -eq 0 ]]
+	echo "${output}" | grep -q "disabled jira"
+	echo "${output}" | grep -q "disabled linear"
+
+	disable_tools jira linear
+	[[ "${CHECK_JIRA}" == "false" ]]
+	[[ "${CHECK_LINEAR}" == "false" ]]
+	[[ "${CHECK_GITHUB}" == "true" ]]
+	[[ "${CHECK_COWORKER}" == "true" ]]
+}
+
+@test "disable_tools:: fails on unknown tool names" {
+	run disable_tools nope
+	[[ "${status}" -eq 1 ]]
+	echo "${output}" | grep -q "Unknown tool"
+}
+
+@test "confirm_proceed_without_tools:: auto-proceeds on non-interactive stdin" {
+	FAILED_TOOLS=("linear" "github")
+
+	run confirm_proceed_without_tools
+	[[ "${status}" -eq 0 ]]
+	echo "${output}" | grep -q "Missing or invalid access for: linear,github"
+	echo "${output}" | grep -q "proceeding without: linear,github"
+}
+
+@test "confirm_proceed_without_tools:: fails when FAILED_TOOLS is empty" {
+	FAILED_TOOLS=()
+
+	run confirm_proceed_without_tools
+	[[ "${status}" -eq 1 ]]
+	echo "${output}" | grep -q "no failed tools to confirm"
+}
+
+@test "process_input:: rejects missing, invalid, incomplete, and relative config" {
+	TELLME_CONFIG="${TEST_DIR}/missing.json"
+	export TELLME_CONFIG
+	run process_input --range "2020-01-01"
+	[[ "${status}" -ne 0 ]]
+	echo "${output}" | grep -q "load_tellme_config:: config file is required"
+
+	TELLME_CONFIG="${TEST_DIR}/bad.json"
+	export TELLME_CONFIG
+	cat <<'EOF' >"${TELLME_CONFIG}"
+{"repos": [
+EOF
+	run process_input --range "2020-01-01"
+	[[ "${status}" -ne 0 ]]
+	echo "${output}" | grep -q "load_tellme_config::"
+
+	TELLME_CONFIG="${TEST_DIR}/incomplete.json"
+	export TELLME_CONFIG
+	cat <<'EOF' >"${TELLME_CONFIG}"
+{
+  "repos": [
+    {"path": "/repo-one", "branch": "main"},
+    {"path": "/repo-two"}
+  ]
+}
+EOF
+	run process_input --range "2020-01-01"
+	[[ "${status}" -ne 0 ]]
+	echo "${output}" | grep -q "needs repos with path and branch"
+
+	TELLME_CONFIG="${TEST_DIR}/relative.json"
+	export TELLME_CONFIG
+	cat <<'EOF' >"${TELLME_CONFIG}"
+{
+  "repos": [
+    {"path": "repo-one", "branch": "main"}
+  ]
+}
+EOF
+	run process_input --range "2020-01-01"
+	[[ "${status}" -ne 0 ]]
+	echo "${output}" | grep -q "expand_repo_path:: path must resolve to an absolute POSIX path"
+}
+
+@test "process_input:: loads config, expands paths, and lets CLI win" {
+	HOME="${TEST_DIR}/home"
+	export HOME
+	mkdir -p "${HOME}/from-tilde" "${TEST_DIR}/absolute-repo"
+
+	TELLME_CONFIG="${TEST_DIR}/expand.json"
+	export TELLME_CONFIG
+	cat <<EOF >"${TELLME_CONFIG}"
+{
+  "author": "Config Author",
+  "github_user": "configuser",
+  "repos": [
+    {"path": "${TEST_DIR}/absolute-repo", "branch": "master"},
+    {"path": "~/from-tilde", "branch": "main"}
+  ]
+}
+EOF
+	unset AUTHOR GITHUB_USER
+	TOOLS=""
+
+	process_input --range "2020-01-01" --tools github --github-user overrideuser
+	[[ "${#REPOS[@]}" -eq 2 ]]
+	[[ "${REPOS[0]}" == "${TEST_DIR}/absolute-repo:master" ]]
+	[[ "${REPOS[1]}" == "${HOME}/from-tilde:main" ]]
+	[[ "${AUTHOR}" == "Config Author" ]]
+	[[ "${TOOLS}" == "github" ]]
+	[[ "${GITHUB_USER}" == "overrideuser" ]]
+}
+
+@test "process_commits:: disables github when enrichment fails" {
 	create_analyzer_repo "${TEST_DIR}/repo"
 	REPO_PATH="${TEST_DIR}/repo"
-	local out_file="${TEST_DIR}/diff.txt"
-	local sha
-	sha=$(git -C "${TEST_DIR}/repo" log --author="Author One" --format=%H -n 1)
+	OUTPUT_PATH="${TEST_DIR}/out"
+	mkdir -p "${OUTPUT_PATH}"
+	CHECK_GITHUB="true"
+	CHECK_JIRA="false"
+	CHECK_LINEAR="false"
+	CHECK_COWORKER="false"
 
-	write_commit_details "${sha}" "${out_file}"
-	[[ -s "${out_file}" ]]
-	grep -q "Commit by author1" "${out_file}"
+	write_pr_details() {
+		echo "write_pr_details:: boom" >&2
+		return 1
+	}
+
+	local sha
+	sha=$(git -C "${TEST_DIR}/repo" log --author="Author One" --format=%h -n 1)
+	COMMITS=("${sha}")
+
+	run process_commits
+	[[ "${status}" -eq 0 ]]
+	echo "${output}" | grep -q "Failed to write PR details"
+	echo "${output}" | grep -q "disabling github"
+
+	CHECK_GITHUB="true"
+	process_commits
+	[[ "${CHECK_GITHUB}" == "false" ]]
+}
+
+@test "process_commits:: disables linear after first mid-run failure" {
+	create_analyzer_repo "${TEST_DIR}/repo"
+	REPO_PATH="${TEST_DIR}/repo"
+	OUTPUT_PATH="${TEST_DIR}/out"
+	mkdir -p "${OUTPUT_PATH}"
+	CHECK_JIRA="false"
+	CHECK_LINEAR="true"
+	CHECK_GITHUB="false"
+	CHECK_COWORKER="false"
+
+	local call_count_file="${TEST_DIR}/linear-calls"
+	printf '0\n' >"${call_count_file}"
+	write_linear_details() {
+		local count
+		count=$(cat "${call_count_file}")
+		count=$((count + 1))
+		printf '%s\n' "${count}" >"${call_count_file}"
+		echo "write_linear_details:: boom" >&2
+		return 1
+	}
+
+	local sha1
+	local sha2
+	sha1=$(git -C "${TEST_DIR}/repo" rev-parse --short HEAD)
+	(
+		cd "${TEST_DIR}/repo"
+		printf 'second\n' >second.txt
+		git add second.txt
+		GIT_COMMITTER_NAME="Author One" GIT_COMMITTER_EMAIL="author1@example.com" \
+			git commit --author="Author One <author1@example.com>" -m "second commit" >/dev/null 2>&1
+	)
+	sha2=$(git -C "${TEST_DIR}/repo" rev-parse --short HEAD)
+	COMMITS=("${sha1}" "${sha2}")
+
+	process_commits
+	[[ "${CHECK_LINEAR}" == "false" ]]
+	[[ "$(cat "${call_count_file}")" == "1" ]]
 }

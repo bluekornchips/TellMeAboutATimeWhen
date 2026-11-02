@@ -1,4 +1,5 @@
 updates/
+tell-me-about.json
 *.swp
 .DS_Store
 *.bats_tmp

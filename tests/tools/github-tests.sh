@@ -528,6 +528,7 @@ fixture_search_prs_many() {
 	git remote add origin "https://github.com/owner/repo.git" 2>/dev/null || git remote set-url origin "https://github.com/owner/repo.git"
 
 	AUTHOR="testuser"
+	GITHUB_USER="testuser"
 	PERIOD_START="2026-09-01"
 	PERIOD_END="2026-09-14"
 	REPO_PATH="${TEST_DIR}/repo"
@@ -560,12 +561,13 @@ fixture_search_prs_many() {
 	unset -f gh
 }
 
-@test "write_involvement_prs:: soft-fails one role and still writes indexes" {
+@test "write_involvement_prs:: writes empty indexes and fails when a role fetch fails" {
 	create_worktree_repo "${TEST_DIR}/repo"
 	cd "${TEST_DIR}/repo"
 	git remote add origin "https://github.com/owner/repo.git" 2>/dev/null || git remote set-url origin "https://github.com/owner/repo.git"
 
 	AUTHOR="testuser"
+	GITHUB_USER="testuser"
 	PERIOD_START="2026-09-01"
 	PERIOD_END="2026-09-14"
 	REPO_PATH="${TEST_DIR}/repo"
@@ -586,7 +588,7 @@ fixture_search_prs_many() {
 	}
 
 	run write_involvement_prs "${out_root}"
-	[[ "$status" -eq 0 ]]
+	[[ "$status" -eq 1 ]]
 	[[ -f "${out_root}/prs/reviewed/index.json" ]]
 	[[ ! -f "${out_root}/prs/.signature" ]]
 	grep -q '\[\]' "${out_root}/prs/reviewed/index.json"
@@ -766,7 +768,7 @@ fixture_search_prs_many() {
 	}
 
 	run write_involvement_prs "${out_root}"
-	[[ "$status" -eq 0 ]]
+	[[ "$status" -eq 1 ]]
 	[[ ! -f "${out_root}/prs/.signature" ]]
 	grep -q '\[\]' "${out_root}/prs/reviewed/index.json"
 

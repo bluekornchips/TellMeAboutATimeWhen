@@ -4,7 +4,7 @@ Git commit analyzer that writes commit details, GitHub pull requests, JIRA ticke
 
 ## Overview
 
-`tell-me-about.sh` analyzes commits and writes one directory per commit. GitHub, JIRA, Linear, and Coworker are enabled by default. Pass `--tools` with a comma-separated subset to narrow that set.
+`tell-me-about.sh` analyzes commits and writes one directory per commit. Repos and author come from `tell-me-about.json`. GitHub, JIRA, Linear, and Coworker are enabled by default. Pass `--tools` with a comma-separated subset to narrow that set.
 
 Each commit directory can contain:
 
@@ -20,14 +20,14 @@ When `github` is enabled, the analyzer also writes involvement PRs under `prs/`:
 - `prs/commented/index.json`: PRs the GitHub user commented on
 - `prs/.signature`: Cache key for repo, GitHub user, and `--range`
 
-Use `-a` as the GitHub login only when it is already a username. Otherwise pass `--github-user`. These indexes are written even when no local commits are found in the range. Changing `--range` or `--github-user` refreshes all three indexes together. Empty indexes are valid cache hits when the signature matches. A failed role search does not stamp the signature, so the next run retries.
+Use JSON `author` as the GitHub login only when it is already a username. Otherwise pass `--github-user` or set JSON `github_user`. These indexes are written even when no local commits are found in the range. Changing `--range` or `--github-user` refreshes all three indexes together. Empty indexes are valid cache hits when the signature matches. A failed role search does not stamp the signature, so the next run retries.
 
 Two properties matter when reading these indexes:
 
 - GitHub PR search has no `merged-by` qualifier, so the merged role lists merged PRs in the window and filters on `mergedBy` locally. Merged entries carry a true `mergedAt`.
 - The reviewed and commented roles are windowed by last update, not by when the review or comment happened, because GitHub search offers no event-time qualifier for them. A PR reviewed earlier but updated inside the window still appears. The same PR can appear under more than one role, so dedupe by `number` before counting.
 
-The `coworker` tool does not download meetings from bash. It verifies Coworker MCP in `~/.cursor/mcp.json`, creates `meetings/`, and prints the date window plus project skill paths. The parent skill then calls Coworker `calendar_search` and `transcript_by_id` and writes:
+The `coworker` tool does not download meetings from bash. Startup healthcheck verifies Coworker MCP in `~/.cursor/mcp.json`. The run creates `meetings/` and prints the date window plus project skill paths. The parent skill then calls Coworker `calendar_search` and `transcript_by_id` and writes:
 
 - `meetings/YYYY-MM-DD_slug/details.txt`: Title, time, attendees, URL, summary, decisions, action items
 - `meetings/YYYY-MM-DD_slug/transcript.txt`: Transcript when Coworker returned one
@@ -35,7 +35,8 @@ The `coworker` tool does not download meetings from bash. It verifies Coworker M
 ## Layout
 
 ```text
-tell-me-about.sh          Orchestrator CLI, argv and pipeline
+tell-me-about.sh          Orchestrator CLI entry
+tell-me-about.json.example Sample local config; copy to tell-me-about.json
 tools/
   github.sh               Sourced GitHub helpers, not run directly
   jira.sh                 Sourced JIRA helpers, not run directly
@@ -44,6 +45,7 @@ tools/
   lib/
     git.sh                Shared git helpers
     util.sh               Shared micro-helpers
+    config.sh             tell-me-about.json resolve and load
     commits.sh            Commit selection and period helpers
     print.sh              Summary card helpers only
 .cursor/skills/
@@ -65,7 +67,7 @@ tests/
 - Bash 3.2 or higher
 - Git
 - GitHub CLI (`gh`) when `github` is enabled
-- jq when `github` or `coworker` is enabled
+- jq when `github` or `coworker` is enabled, or when reading `tell-me-about.json`
 - Atlassian CLI (`acli`) when `jira` is enabled
 - curl and jq when `linear` is enabled, plus `LINEAR_API_KEY`
 - Coworker MCP in `~/.cursor/mcp.json` when `coworker` is enabled
@@ -81,49 +83,47 @@ make install
 ## Usage
 
 ```bash
-./tell-me-about.sh [--repo <path>:<branch> ...] [-a <author>] [--github-user <login>] --range <date> [<end>] [options]
+./tell-me-about.sh --range <date> [<end>] [--tools <tools>] [--github-user <login>]
 ```
 
 Required:
 
-- `--repo <path>:<branch>`: Repository path and branch, repeatable
+- `tell-me-about.json` with at least one repo path that resolves to an absolute path
 - `--range`: Commit date window
 
 Optional:
 
-- `-a, --author <author>`: Git author; defaults to git global `user.name` or `user.email`
-- `--github-user <login>`: GitHub username when `github` is enabled; required unless `--author` is a username
-- `--range <date>`: Commits since `YYYY-MM-DD`, or between two dates when a second date is given
 - `--tools <tools>`: Comma-separated subset of `jira`, `linear`, `github`, `coworker`; default is all four
+- `--github-user <login>`: GitHub username when `github` is enabled; required unless JSON `author` is a username or JSON `github_user` / `--github-user` supplies one
 - `-h, --help`: Show help
 
+### Local config: `tell-me-about.json`
+
+Copy [`tell-me-about.json.example`](tell-me-about.json.example) to `tell-me-about.json` beside `tell-me-about.sh`. The real file is gitignored and required for runs.
+
+Required key: `repos`, each with non-empty `path` and `branch`. Paths may use leading `~`; after expansion they must be absolute POSIX paths. Spaces in paths are kept. Command substitution is rejected. Optional: `author` and `github_user` fill when unset; CLI `--github-user` wins over JSON `github_user`; `author` overrides git-global only. Tools are CLI-only via `--tools`. Output root is `OUTPUT_DIR` or `$HOME/tellme`. Override the config path with `TELLME_CONFIG`.
+
 Period dates always come from `--range`. Start must not be after end. The `coworker` tool uses that window for meetings.
+
+When an enabled tool fails healthcheck, an interactive prompt asks whether to continue without it. Non-interactive stdin skips those tools after a stderr notice and continues the run.
 
 ## Examples
 
 ```bash
-# Since a date, all tools, GitHub username matches -a
-./tell-me-about.sh --repo /path/to/repo:main -a octocat --range "2026-01-01"
-
-# Display-name git author with a separate GitHub login
-./tell-me-about.sh --repo /path/to/repo:main \
-  -a "Author Name" --github-user octocat --range "2026-01-01"
+# Repos and author from tell-me-about.json
+./tell-me-about.sh --range "2026-01-01"
 
 # Between two dates
-./tell-me-about.sh --repo /path/to/repo:main -a "Author Name" --range "2026-01-01" "2026-01-31"
+./tell-me-about.sh --range "2026-01-01" "2026-01-31"
 
-# Multiple repositories
-TELLME_REPOS_ROOT="$HOME/repos" ./tell-me-about.sh \
-  --repo repo-one:main \
-  --repo repo-two:develop \
-  -a "Author Name" \
-  --range "2026-08-01" "2026-08-26"
+# Display-name author in JSON with a GitHub login override
+./tell-me-about.sh --range "2026-01-01" --github-user octocat
 
 # GitHub and JIRA only
-./tell-me-about.sh --repo /path/to/repo:main -a octocat --range "2026-01-01" "2026-01-31" --tools github,jira
+./tell-me-about.sh --range "2026-01-01" "2026-01-31" --tools github,jira
 
 # GitHub and Linear only
-./tell-me-about.sh --repo /path/to/repo:main -a octocat --range "2026-01-01" "2026-01-31" --tools github,linear
+./tell-me-about.sh --range "2026-01-01" "2026-01-31" --tools github,linear
 ```
 
 ## Output Structure
@@ -237,7 +237,7 @@ make shellcheck
 Suites:
 
 - `tests/tell-me-about-tests.sh`: orchestrator
-- `tests/tools/*-tests.sh`: tools and shared libs
+- `tests/tools/*-tests.sh`: tools and shared libs, including `config-tests.sh`
 - `tests/helpers/`: fixtures and Bats bootstrap
 
 ## Environment Variables
@@ -246,7 +246,7 @@ Suites:
 - `OUTPUT_DIR`: Output root; defaults to `$HOME/tellme`
 - `COWORKER_MCP_CONFIG`: Cursor MCP JSON path; defaults to `$HOME/.cursor/mcp.json`
 - `COWORKER_TIMEZONE`: Optional IANA timezone for project skills
-- `TELLME_REPOS_ROOT`: Base directory for relative paths in `--repo`
+- `TELLME_CONFIG`: Optional path to a tell-me-about JSON file; defaults to `tell-me-about.json` beside `tell-me-about.sh`
 - `LINEAR_API_KEY`: Personal Linear API key when `linear` is enabled
 - `LINEAR_GRAPHQL_URL`: Optional GraphQL endpoint; defaults to `https://api.linear.app/graphql`
 - `COLUMNS`: Terminal width hint for summary separators; capped at 120

@@ -50,7 +50,7 @@ check_linear_dependencies() {
 # - 1 on failure
 linear_graphql_request() {
 	local query="${1:-}"
-	local variables_json="${2:-{}}"
+	local variables_json="${2:-}"
 
 	if [[ -z "${query}" ]]; then
 		echo "linear_graphql_request:: query is not set" >&2
@@ -60,6 +60,11 @@ linear_graphql_request() {
 	if [[ -z "${LINEAR_API_KEY:-}" ]]; then
 		echo "linear_graphql_request:: LINEAR_API_KEY is not set" >&2
 		return 1
+	fi
+
+	# Bash parses ${2:-{}} as ${2:-{ plus a leftover }, so an explicit {} argument becomes {}}.
+	if [[ -z "${variables_json}" ]]; then
+		variables_json="{}"
 	fi
 
 	if ! echo "${variables_json}" | jq -e . >/dev/null 2>&1; then
@@ -206,7 +211,8 @@ format_issue_details() {
 #
 # Returns:
 # - 0 on success
-# - 1 on failure
+# - 1 on transport or hard failure
+# - 2 when the issue is not found in Linear
 get_issue_details_for_id() {
 	local issue_id="$1"
 
@@ -230,8 +236,7 @@ get_issue_details_for_id() {
 	local identifier
 	identifier=$(echo "${response}" | jq -r '.data.issue.identifier // empty')
 	if [[ -z "${identifier}" ]]; then
-		echo "get_issue_details_for_id:: Failed to retrieve issue details for: ${issue_id}" >&2
-		return 1
+		return 2
 	fi
 
 	format_issue_details "${response}" || return 1
@@ -261,15 +266,6 @@ write_linear_details() {
 		return 1
 	fi
 
-	local commit_dir
-	commit_dir=$(dirname "${linear_file}")
-	if [[ ! -d "${commit_dir}" ]]; then
-		echo "write_linear_details:: Commit directory does not exist: ${commit_dir}" >&2
-		return 1
-	fi
-
-	check_linear_dependencies || return 1
-	validate_linear_auth || return 1
 	write_ticket_details "${commit}" "${linear_file}" get_issue_details_for_id write_linear_details || return 1
 
 	return 0

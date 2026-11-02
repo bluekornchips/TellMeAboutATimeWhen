@@ -1,0 +1,18 @@
+{
+  "author": "octocat",
+  "github_user": "octocat",
+  "repos": [
+    {
+      "path": "/absolute/path/to/repo-one",
+      "branch": "main"
+    },
+    {
+      "path": "/absolute/path/to/My Projects/repo-spaced",
+      "branch": "main"
+    },
+    {
+      "path": "~/repos/repo-three",
+      "branch": "main"
+    }
+  ]
+}

@@ -95,22 +95,6 @@ extract_ticket_ids() {
 	return 0
 }
 
-# Returns whether a text artifact should be refreshed
-#
-# Inputs:
-# - $1: artifact path
-#
-# Returns:
-# - 0 when refresh is needed
-# - 1 when the existing file can be kept
-needs_text_refresh() {
-	local artifact_file="${1:-}"
-
-	[[ -z "${artifact_file}" || ! -s "${artifact_file}" ]] && return 0
-
-	return 1
-}
-
 # Writes fetched ticket details for IDs found in a commit message
 #
 # Inputs:
@@ -122,10 +106,11 @@ needs_text_refresh() {
 # Side Effects:
 # - Writes ticket details to the output file when tickets are found
 # - Does not create an empty file when no tickets are found
+# - Logs hard fetch failures, status 1, and stays quiet on status 2 not-found
 #
 # Returns:
-# - 0 on success
-# - 1 on failure
+# - 0 on success, including quiet not-found misses with no hard failures
+# - 1 when setup fails or any fetch returns status 1
 write_ticket_details() {
 	local commit="${1:-}"
 	local output_file="${2:-}"
@@ -163,19 +148,30 @@ write_ticket_details() {
 
 	local ticket_id
 	local wrote=0
+	local hard_failed=0
+	local fetch_status
 	while IFS= read -r ticket_id; do
 		if [[ -n "${ticket_id}" ]]; then
+			fetch_status=0
 			if "${fetch_fn}" "${ticket_id}" >>"${output_file}"; then
 				printf '\n' >>"${output_file}"
 				wrote=1
 			else
-				echo "${caller}:: Failed to fetch: ${ticket_id}" >&2
+				fetch_status=$?
+				if [[ "${fetch_status}" -eq 1 ]]; then
+					echo "${caller}:: Failed to fetch: ${ticket_id}" >&2
+					hard_failed=1
+				fi
 			fi
 		fi
 	done <<<"${ticket_ids}"
 
 	if [[ "${wrote}" -eq 0 ]]; then
 		rm -f "${output_file}"
+	fi
+
+	if [[ "${hard_failed}" -ne 0 ]]; then
+		return 1
 	fi
 
 	return 0

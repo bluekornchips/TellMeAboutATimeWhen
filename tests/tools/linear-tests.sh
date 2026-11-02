@@ -71,7 +71,11 @@ issue_json() {
 mock_linear_success() {
 	linear_graphql_request() {
 		local query="${1:-}"
-		local variables_json="${2:-{}}"
+		local variables_json="${2:-}"
+
+		if [[ -z "${variables_json}" ]]; then
+			variables_json="{}"
+		fi
 
 		if [[ "${query}" == *"viewer"* ]]; then
 			echo '{"data":{"viewer":{"id":"user-1"}}}'
@@ -116,7 +120,11 @@ mock_linear_issue_failure() {
 mock_linear_empty_comments() {
 	linear_graphql_request() {
 		local query="${1:-}"
-		local variables_json="${2:-{}}"
+		local variables_json="${2:-}"
+
+		if [[ -z "${variables_json}" ]]; then
+			variables_json="{}"
+		fi
 
 		if [[ "${query}" == *"viewer"* ]]; then
 			echo '{"data":{"viewer":{"id":"user-1"}}}'
@@ -193,9 +201,20 @@ mock_linear_empty_comments() {
 	echo "$output" | grep -q "Comment 1"
 }
 
-@test "get_issue_details_for_id:: fails when the issue is missing" {
+@test "get_issue_details_for_id:: returns not-found when the issue is missing" {
 	unset -f linear_graphql_request
 	mock_linear_issue_failure
+	run get_issue_details_for_id "PROJ-123"
+	[[ "$status" -eq 2 ]]
+	[[ -z "$output" ]]
+}
+
+@test "get_issue_details_for_id:: fails loudly when GraphQL request fails" {
+	unset -f linear_graphql_request
+	linear_graphql_request() {
+		echo "linear_graphql_request:: GraphQL request failed" >&2
+		return 1
+	}
 	run get_issue_details_for_id "PROJ-123"
 	[[ "$status" -eq 1 ]]
 	echo "$output" | grep -q "Failed to retrieve issue details"
@@ -343,6 +362,53 @@ mock_linear_empty_comments() {
 	run linear_graphql_request ""
 	[[ "$status" -eq 1 ]]
 	echo "$output" | grep -q "query is not set"
+}
+
+@test "linear_graphql_request:: accepts an explicit empty JSON object" {
+	unset -f linear_graphql_request
+	# shellcheck disable=SC1090
+	source "${SCRIPT}"
+
+	curl() {
+		echo '{"data":{"viewer":{"id":"user-1"}}}'
+		return 0
+	}
+
+	run linear_graphql_request "query { viewer { id } }" '{}'
+	unset -f curl
+	[[ "$status" -eq 0 ]]
+	echo "$output" | grep -q '"id":"user-1"'
+}
+
+@test "linear_graphql_request:: defaults variables to an empty JSON object" {
+	unset -f linear_graphql_request
+	# shellcheck disable=SC1090
+	source "${SCRIPT}"
+
+	curl() {
+		echo '{"data":{"viewer":{"id":"user-1"}}}'
+		return 0
+	}
+
+	run linear_graphql_request "query { viewer { id } }"
+	unset -f curl
+	[[ "$status" -eq 0 ]]
+	echo "$output" | grep -q '"id":"user-1"'
+}
+
+@test "validate_linear_auth:: succeeds when called with the real GraphQL helper" {
+	unset -f linear_graphql_request
+	# shellcheck disable=SC1090
+	source "${SCRIPT}"
+
+	curl() {
+		echo '{"data":{"viewer":{"id":"user-1"}}}'
+		return 0
+	}
+
+	run validate_linear_auth
+	unset -f curl
+	[[ "$status" -eq 0 ]]
 }
 
 @test "integration:: rejects direct script execution" {

@@ -168,21 +168,6 @@ fake_fetch() {
 	echo "$output" | grep -v -q "PROJ-111"
 }
 
-@test "needs_text_refresh:: true when missing or empty" {
-	local artifact_file="${TEST_DIR}/artifact.txt"
-
-	run needs_text_refresh "${artifact_file}"
-	[[ "$status" -eq 0 ]]
-
-	: >"${artifact_file}"
-	run needs_text_refresh "${artifact_file}"
-	[[ "$status" -eq 0 ]]
-
-	echo "ticket" >"${artifact_file}"
-	run needs_text_refresh "${artifact_file}"
-	[[ "$status" -eq 1 ]]
-}
-
 @test "write_ticket_details:: fails when commit is not set" {
 	local output_file="${TEST_DIR}/output/tickets.txt"
 	mkdir -p "$(dirname "${output_file}")"
@@ -248,4 +233,49 @@ fake_fetch() {
 	run write_ticket_details "${commit}" "${output_file}" fake_fetch write_ticket_details
 	[[ "$status" -eq 0 ]]
 	[[ ! -f "${output_file}" ]]
+}
+
+@test "write_ticket_details:: stays quiet on not-found status" {
+	local test_repo="${TEST_DIR}/test_repo"
+	create_worktree_repo "${test_repo}"
+	echo "test" >file.txt
+	git add file.txt
+	git commit -m "PROJ-123: missing elsewhere" >/dev/null 2>&1
+
+	local commit
+	commit=$(git rev-parse HEAD)
+	local output_file="${TEST_DIR}/output/tickets.txt"
+	mkdir -p "$(dirname "${output_file}")"
+
+	fake_fetch() {
+		return 2
+	}
+
+	run write_ticket_details "${commit}" "${output_file}" fake_fetch write_ticket_details
+	[[ "$status" -eq 0 ]]
+	[[ ! -f "${output_file}" ]]
+	! echo "$output" | grep -q "Failed to fetch"
+}
+
+@test "write_ticket_details:: logs hard fetch failures" {
+	local test_repo="${TEST_DIR}/test_repo"
+	create_worktree_repo "${test_repo}"
+	echo "test" >file.txt
+	git add file.txt
+	git commit -m "PROJ-123: hard failure" >/dev/null 2>&1
+
+	local commit
+	commit=$(git rev-parse HEAD)
+	local output_file="${TEST_DIR}/output/tickets.txt"
+	mkdir -p "$(dirname "${output_file}")"
+
+	fake_fetch() {
+		echo "fake_fetch:: transport failed" >&2
+		return 1
+	}
+
+	run write_ticket_details "${commit}" "${output_file}" fake_fetch write_ticket_details
+	[[ "$status" -eq 1 ]]
+	[[ ! -f "${output_file}" ]]
+	echo "$output" | grep -q "Failed to fetch: PROJ-123"
 }

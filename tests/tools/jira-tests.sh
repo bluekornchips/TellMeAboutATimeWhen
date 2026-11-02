@@ -139,12 +139,12 @@ mock_acli_success
 	echo "$output" | grep -q "Summary: Test Ticket"
 }
 
-@test "get_ticket_details_for_id:: fails when acli view fails" {
+@test "get_ticket_details_for_id:: returns not-found when acli view fails" {
 	unset -f acli
 	mock_acli_view_failure
 	run get_ticket_details_for_id "PROJ-123"
-	[[ "$status" -eq 1 ]]
-	echo "$output" | grep -q "Failed to retrieve ticket details"
+	[[ "$status" -eq 2 ]]
+	[[ -z "$output" ]]
 }
 
 @test "get_ticket_details_for_id:: warns but succeeds when comment list call fails" {

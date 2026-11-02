@@ -18,7 +18,7 @@ Call MCP tools directly instead of starting an additional model-powered agent. C
 
 ## Shared workflow
 
-1. Identify every analysis root from the supplied tellme paths. A multi-repo run produces one root per `--repo`:
+1. Identify every analysis root from the supplied tellme paths. A multi-repo run produces one root per JSON `repos` entry:
    `$OUTPUT_DIR/{repo_name}/{branch}/{author}/`.
 2. For each analysis root, read every relevant commit directory under that root.
 3. Use `diff.txt`, `pr.json`, `jira.txt`, and `linear.txt` when present.

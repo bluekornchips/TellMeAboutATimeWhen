@@ -201,6 +201,42 @@ create_analyzer_repo() {
 	return 0
 }
 
+# Writes TELLME_CONFIG with author and path:branch repo specs
+#
+# Inputs:
+# - $1: author string
+# - $@: remaining path:branch repo specs
+#
+# Side Effects:
+# - Writes and exports TELLME_CONFIG under TEST_DIR
+#
+# Returns:
+# - 0 on success
+write_tellme_config() {
+	local author="$1"
+	shift 1
+
+	local repos_json="[]"
+	local spec
+	local path
+	local branch
+	for spec in "$@"; do
+		path="${spec%:*}"
+		branch="${spec##*:}"
+		repos_json=$(jq -c --arg path "${path}" --arg branch "${branch}" \
+			'. + [{path: $path, branch: $branch}]' <<<"${repos_json}")
+	done
+
+	TELLME_CONFIG="${TEST_DIR}/tell-me-about.json"
+	export TELLME_CONFIG
+	jq -n \
+		--arg author "${author}" \
+		--argjson repos "${repos_json}" \
+		'{author: $author, repos: $repos}' >"${TELLME_CONFIG}"
+
+	return 0
+}
+
 # Creates shared seed and analyzer templates for a Bats file
 #
 # Side Effects:

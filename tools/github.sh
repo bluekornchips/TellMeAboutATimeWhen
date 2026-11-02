@@ -23,7 +23,7 @@ is_github_username() {
 	return 1
 }
 
-# Sets GITHUB_USER from --github-user or a username-shaped AUTHOR
+# Sets GITHUB_USER from --github-user, JSON github_user, or a username-shaped AUTHOR
 #
 # Side Effects:
 # - Sets GITHUB_USER when it can be derived from AUTHOR
@@ -46,7 +46,7 @@ set_github_user() {
 		return 0
 	fi
 
-	echo "set_github_user:: --github-user is required when --author is not a GitHub username" >&2
+	echo "set_github_user:: JSON github_user or --github-user is required when author is not a GitHub username" >&2
 
 	return 1
 }
@@ -176,9 +176,6 @@ write_pr_details() {
 		echo "write_pr_details:: commit or pr_file is not set" >&2
 		return 1
 	fi
-
-	check_github_dependencies || return 1
-	git_validate_repo || return 1
 
 	local pr_data
 	if ! pr_data=$(get_pr_details "${commit}" 2>/dev/null); then
@@ -387,7 +384,7 @@ search_prs_by_involvement() {
 #
 # Returns:
 # - 0 on success
-# - 1 on dependency, login, or path errors
+# - 1 on path or role-fetch errors after writing empty indexes
 write_involvement_prs() {
 	local output_root="${1:-}"
 
@@ -396,7 +393,6 @@ write_involvement_prs() {
 		return 1
 	fi
 
-	check_github_dependencies || return 1
 	git_validate_repo || return 1
 
 	if [[ -z "${GITHUB_USER:-}" ]]; then
@@ -446,7 +442,7 @@ write_involvement_prs() {
 
 	if [[ "${fetch_failed}" -ne 0 ]]; then
 		rm -f "${output_root}/prs/.signature"
-		return 0
+		return 1
 	fi
 
 	if ! printf '%s' "${expected_sig}" >"${output_root}/prs/.signature" 2>/dev/null; then

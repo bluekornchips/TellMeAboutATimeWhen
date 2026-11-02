@@ -105,14 +105,6 @@ write_meetings_stub() {
 	fi
 
 	print_section
-	check_coworker_dependencies || return 1
-	local mcp_config
-	mcp_config=$(resolve_mcp_config) || return 1
-	if ! check_coworker_mcp "${mcp_config}"; then
-		echo "write_meetings_stub:: Coworker MCP is not configured" >&2
-		return 1
-	fi
-
 	print_field "Meetings" "${meetings_dir}" "commit"
 	print_field "Window" "${period_start} to ${period_end}" "path"
 	print_field "Parent" ".cursor/skills/tell-me-about-a-time-when" "path"

@@ -15,42 +15,142 @@ DEFAULT_OUTPUT_DIR="tellme"
 # - 0 always
 usage() {
 	cat <<EOF
-Usage: $(basename "$0") [--repo <path>:<branch> ...]
-       [-a|--author <author>] [--github-user <login>]
-       [--range <date> | --range <start_date> <end_date>]
+Usage: tell-me-about.sh --range <date> [<end_date>]
        [--tools <jira,linear,github,coworker>]
+       [--github-user <login>]
 
-Analyze git commits by author and save detailed information to
-commit-specific directories.
-
-Each commit is saved to: OUTPUT_DIR/REPO_NAME/SANITIZED_BRANCH/SANITIZED_AUTHOR/SHORT_COMMIT/
-  - pr.json  : Pull request details when the github tool is enabled
-  - diff.txt : Commit message and changed files
-  - jira.txt : JIRA ticket details when the jira tool is enabled
-  - linear.txt : Linear issue details when the linear tool is enabled
-
-When github is enabled, involvement PRs are also written to:
-  OUTPUT_DIR/REPO_NAME/SANITIZED_BRANCH/SANITIZED_AUTHOR/prs/{merged,reviewed,commented}/index.json
-
-All tools are enabled by default. Use --tools with a comma-separated
-list to select a subset.
+Repos and optional author/github_user come from tell-me-about.json.
+Override the config path with TELLME_CONFIG.
 
 Options:
-  --repo <path>:<branch>     : Repository path and branch, repeatable
-  -a, --author <author>      : Git author, defaults to git global user.name or user.email
+  --range <date>             : Commits since date, or between two dates
+  --tools <tools>            : Subset of jira,linear,github,coworker; default all
   --github-user <login>      : GitHub username when github is enabled
-  --range <date>             : Analyze commits since date, or between two dates
-  --tools <tools>            : Comma-separated subset of jira,linear,github,coworker
   -h, --help                 : Show this help message
 
---range is required. The coworker tool uses --range dates. Project
-skills then call Coworker MCP calendar_search and transcript_by_id.
+--range is required. Repo paths may use leading ~, then must be absolute.
+Author defaults to JSON author, else git global user.name or user.email.
+When github is enabled, pass --github-user or JSON github_user unless author is a username.
 
-When github is enabled, --github-user is required unless --author is
-already a GitHub username. Relative paths in --repo resolve against
-TELLME_REPOS_ROOT when set.
+When a tool fails healthcheck, an interactive prompt asks whether to
+continue without it. Non-interactive stdin skips failed tools after a
+stderr notice and continues the run.
 
 EOF
+
+	return 0
+}
+
+# Parses CLI flags and loads tell-me-about.json repos
+#
+# Inputs:
+# - $@: argv after the program name
+#
+# Side Effects:
+# - Sets INPUT_HELP, REPOS, RANGE_DATE1, RANGE_DATE2, TOOLS, AUTHOR, GITHUB_USER
+# - Writes usage to stdout when help is requested
+#
+# Returns:
+# - 0 on success or help
+# - 1 on parse, config, or validation failure
+process_input() {
+	REPOS=()
+	INPUT_HELP=0
+
+	while [[ $# -gt 0 ]]; do
+		case "$1" in
+		-h | --help)
+			usage
+			INPUT_HELP=1
+			return 0
+			;;
+		--github-user)
+			if [[ -z "${2:-}" || "$2" == -* ]]; then
+				echo "process_input:: --github-user requires a GitHub username" >&2
+				return 1
+			fi
+			GITHUB_USER="$2"
+			shift 2
+			;;
+		--range)
+			if [[ -n "${RANGE_DATE1:-}" ]]; then
+				echo "process_input:: --range option can only be used once" >&2
+				return 1
+			fi
+			if [[ -z "${2:-}" || "$2" == -* ]]; then
+				echo "process_input:: --range requires a date" >&2
+				return 1
+			fi
+			RANGE_DATE1="$2"
+			shift 2
+			if [[ $# -gt 0 && "$1" != -* ]]; then
+				RANGE_DATE2="$1"
+				shift 1
+			fi
+			;;
+		--tools)
+			if [[ -z "${2:-}" || "$2" == -* ]]; then
+				echo "process_input:: --tools requires jira,linear,github,coworker" >&2
+				return 1
+			fi
+			TOOLS="$2"
+			shift 2
+			;;
+		*)
+			echo "process_input:: Unknown option '$1'" >&2
+			echo "process_input:: Use --help for usage information" >&2
+			return 1
+			;;
+		esac
+	done
+
+	if [[ -z "${RANGE_DATE1:-}" ]]; then
+		echo "process_input:: --range is required" >&2
+		usage
+		return 1
+	fi
+
+	local config_file
+	config_file=$(resolve_tellme_config)
+	load_tellme_config "${config_file}" || return 1
+
+	return 0
+}
+
+# Sets one CHECK_* tool flag
+#
+# Inputs:
+# - $1: tool name from jira, linear, github, coworker
+# - $2: true or false
+#
+# Side Effects:
+# - Sets the matching CHECK_* flag
+#
+# Returns:
+# - 0 on success
+# - 1 when the tool name is unknown
+set_tool_enabled() {
+	local tool="${1:-}"
+	local enabled="${2:-}"
+
+	case "${tool}" in
+	jira)
+		CHECK_JIRA="${enabled}"
+		;;
+	linear)
+		CHECK_LINEAR="${enabled}"
+		;;
+	github)
+		CHECK_GITHUB="${enabled}"
+		;;
+	coworker)
+		CHECK_COWORKER="${enabled}"
+		;;
+	*)
+		echo "set_tool_enabled:: Unknown tool '${tool}'" >&2
+		return 1
+		;;
+	esac
 
 	return 0
 }
@@ -84,25 +184,11 @@ configure_tools() {
 	IFS=',' read -r -a tools_array <<<"${tools}"
 	local tool
 	for tool in "${tools_array[@]}"; do
-		case "${tool}" in
-		github)
-			CHECK_GITHUB="true"
-			;;
-		jira)
-			CHECK_JIRA="true"
-			;;
-		linear)
-			CHECK_LINEAR="true"
-			;;
-		coworker)
-			CHECK_COWORKER="true"
-			;;
-		*)
+		if ! set_tool_enabled "${tool}" "true"; then
 			echo "configure_tools:: Unknown tool '${tool}'" >&2
 			echo "configure_tools:: Allowed tools: jira,linear,github,coworker" >&2
 			return 1
-			;;
-		esac
+		fi
 	done
 
 	return 0
@@ -111,48 +197,158 @@ configure_tools() {
 # Validates dependencies and authentication for enabled tools
 #
 # Side Effects:
+# - Resets FAILED_TOOLS and appends each tool that fails validation
 # - Writes dependency or auth errors from tool helpers to stderr
 #
 # Returns:
 # - 0 on success
 # - 1 when an enabled tool is missing dependencies or authentication
 validate_enabled_tools() {
-	local failed=0
+	FAILED_TOOLS=()
 
 	if [[ "${CHECK_JIRA}" == "true" ]]; then
 		if ! check_jira_dependencies || ! validate_jira_auth; then
-			failed=1
+			FAILED_TOOLS+=("jira")
 		fi
 	fi
 
 	if [[ "${CHECK_LINEAR}" == "true" ]]; then
 		if ! check_linear_dependencies || ! validate_linear_auth; then
-			failed=1
+			FAILED_TOOLS+=("linear")
 		fi
 	fi
 
 	if [[ "${CHECK_GITHUB}" == "true" ]]; then
 		if ! check_github_dependencies; then
-			failed=1
+			FAILED_TOOLS+=("github")
 		fi
 	fi
 
 	if [[ "${CHECK_COWORKER}" == "true" ]]; then
 		if ! check_coworker_dependencies; then
-			failed=1
+			FAILED_TOOLS+=("coworker")
 		else
 			local mcp_config
 			if ! mcp_config=$(resolve_mcp_config); then
-				failed=1
+				FAILED_TOOLS+=("coworker")
 			elif ! check_coworker_mcp "${mcp_config}"; then
-				failed=1
+				FAILED_TOOLS+=("coworker")
 			fi
 		fi
 	fi
 
-	[[ "${failed}" -ne 0 ]] && return 1
+	if [[ "${#FAILED_TOOLS[@]}" -ne 0 ]]; then
+		return 1
+	fi
 
 	return 0
+}
+
+# Disables one or more external tools for the rest of the run
+#
+# Inputs:
+# - $@: tool names from jira, linear, github, coworker
+#
+# Side Effects:
+# - Sets matching CHECK_* flags to false
+# - Writes disable notices to stderr
+#
+# Returns:
+# - 0 on success
+# - 1 when a tool name is unknown
+disable_tools() {
+	local tool
+	for tool in "$@"; do
+		set_tool_enabled "${tool}" "false" || {
+			echo "disable_tools:: Unknown tool '${tool}'" >&2
+			return 1
+		}
+		echo "disable_tools:: disabled ${tool}" >&2
+	done
+
+	return 0
+}
+
+# Runs a command and disables the tool when it fails
+#
+# Inputs:
+# - $1: tool name
+# - $@: command and arguments
+#
+# Side Effects:
+# - May call disable_tools in the current shell
+# - Writes a disable notice to stderr on failure
+#
+# Returns:
+# - 0 when the command succeeds
+# - 1 when the command fails, after disabling the tool
+skip_tool_on_failure() {
+	local tool="${1:-}"
+	shift || true
+
+	if [[ -z "${tool}" ]]; then
+		echo "skip_tool_on_failure:: tool is required" >&2
+		return 1
+	fi
+
+	if "$@"; then
+		return 0
+	fi
+
+	echo "skip_tool_on_failure:: disabling ${tool}" >&2
+	disable_tools "${tool}"
+
+	return 1
+}
+
+# Asks whether to continue after one or more tools failed healthcheck
+#
+# Side Effects:
+# - Reads FAILED_TOOLS
+# - Writes prompt or auto-proceed notice to stderr
+# - Reads a y/N answer from stdin when stdin is a TTY
+#
+# Returns:
+# - 0 when the user proceeds or stdin is non-interactive
+# - 1 when the user declines or FAILED_TOOLS is empty unexpectedly after a failure path
+confirm_proceed_without_tools() {
+	if [[ "${#FAILED_TOOLS[@]}" -eq 0 ]]; then
+		echo "confirm_proceed_without_tools:: no failed tools to confirm" >&2
+		return 1
+	fi
+
+	local tools_list
+	tools_list=$(
+		IFS=','
+		echo "${FAILED_TOOLS[*]}"
+	)
+
+	cat <<EOF >&2
+confirm_proceed_without_tools:: Missing or invalid access for: ${tools_list}
+confirm_proceed_without_tools:: Continuing will skip these tools for this run
+EOF
+
+	if [[ ! -t 0 ]]; then
+		echo "confirm_proceed_without_tools:: non-interactive stdin; proceeding without: ${tools_list}" >&2
+		return 0
+	fi
+
+	local answer
+	printf 'Proceed without these tools? [y/N] ' >&2
+	if ! read -r answer; then
+		echo "confirm_proceed_without_tools:: aborted" >&2
+		return 1
+	fi
+
+	case "${answer}" in
+	y | Y | yes | YES)
+		return 0
+		;;
+	*)
+		echo "confirm_proceed_without_tools:: aborted" >&2
+		return 1
+		;;
+	esac
 }
 
 # Sets AUTHOR from git global config when missing
@@ -164,30 +360,21 @@ validate_enabled_tools() {
 # - 0 on success
 # - 1 on failure
 set_default_author() {
-	if [[ -z "${AUTHOR}" ]]; then
-		local configured_author
-		if ! configured_author=$(git config --global --get user.name 2>/dev/null); then
-			configured_author=""
-		fi
+	[[ -n "${AUTHOR}" ]] && return 0
 
-		if [[ -n "${configured_author}" ]]; then
-			AUTHOR="${configured_author}"
-		else
-			local configured_email
-			if ! configured_email=$(git config --global --get user.email 2>/dev/null); then
-				configured_email=""
-			fi
-
-			if [[ -n "${configured_email}" ]]; then
-				AUTHOR="${configured_email}"
-			else
-				echo "set_default_author:: AUTHOR is not set and no global git user.name or user.email is configured" >&2
-				return 1
-			fi
-		fi
+	local configured
+	if configured=$(git config --global --get user.name 2>/dev/null) && [[ -n "${configured}" ]]; then
+		AUTHOR="${configured}"
+		return 0
 	fi
 
-	return 0
+	if configured=$(git config --global --get user.email 2>/dev/null) && [[ -n "${configured}" ]]; then
+		AUTHOR="${configured}"
+		return 0
+	fi
+
+	echo "set_default_author:: AUTHOR is not set and no global git user.name or user.email is configured" >&2
+	return 1
 }
 
 # Validates git repository and author
@@ -228,45 +415,51 @@ validate_repo() {
 	return 0
 }
 
-# Writes a per-commit tracker artifact when that tool is enabled
+# Writes one enabled ticket artifact and disables the tool on write failure
 #
 # Inputs:
-# - $1: enabled flag, true or false
-# - $2: commit hash
-# - $3: output file
-# - $4: write function name
-# - $5: tracker label for error text
+# - $1: destination variable name for the artifact path
+# - $2: enabled flag, true or false
+# - $3: commit hash
+# - $4: output file
+# - $5: write function name
+# - $6: tool name for skip_tool_on_failure
 #
-# Outputs:
-# - Artifact path to stdout when the file is non-empty
+# Side Effects:
+# - Sets the destination variable to the artifact path when non-empty, else empty
+# - May call skip_tool_on_failure in the current shell
 #
 # Returns:
-# - 0 on success or when disabled
-# - 1 when the write function fails
-write_commit_tracker_file() {
-	local enabled="${1:-}"
-	local commit="${2:-}"
-	local tracker_file="${3:-}"
-	local write_fn="${4:-}"
-	local tracker_label="${5:-}"
+# - 0 on success or when the tool is disabled or already written
+# - 1 when the destination variable name is missing
+write_commit_tool_file() {
+	local dest_var="${1:-}"
+	local enabled="${2:-}"
+	local commit="${3:-}"
+	local tracker_file="${4:-}"
+	local write_fn="${5:-}"
+	local tool="${6:-}"
+
+	if [[ -z "${dest_var}" ]]; then
+		echo "write_commit_tool_file:: destination variable is required" >&2
+		return 1
+	fi
+
+	printf -v "${dest_var}" '%s' ""
 
 	if [[ "${enabled}" != "true" ]]; then
 		return 0
 	fi
 
-	local failed=0
-	if needs_text_refresh "${tracker_file}"; then
-		if ! "${write_fn}" "${commit}" "${tracker_file}"; then
-			echo "process_commits:: Failed to write ${tracker_label} details for ${commit}" >&2
-			failed=1
+	if [[ ! -s "${tracker_file}" ]]; then
+		if ! skip_tool_on_failure "${tool}" "${write_fn}" "${commit}" "${tracker_file}"; then
+			echo "write_commit_tool_file:: Failed to write ${tool} details for ${commit}" >&2
 		fi
 	fi
 
 	if [[ -s "${tracker_file}" ]]; then
-		echo "${tracker_file}"
+		printf -v "${dest_var}" '%s' "${tracker_file}"
 	fi
-
-	[[ "${failed}" -ne 0 ]] && return 1
 
 	return 0
 }
@@ -276,10 +469,12 @@ write_commit_tracker_file() {
 # Side Effects:
 # - Creates commit-specific directories and files
 # - Writes commit information to stdout
+# - May disable jira, linear, or github after an enrichment write fails
+# - Tool enrichment failures never set the failed flag
 #
 # Returns:
 # - 0 on success
-# - 1 on failure
+# - 1 when a core write fails
 process_commits() {
 	if [[ -z "${REPO_PATH}" || -z "${OUTPUT_PATH}" ]]; then
 		echo "process_commits:: REPO_PATH or OUTPUT_PATH is not set" >&2
@@ -317,28 +512,24 @@ process_commits() {
 			fi
 		fi
 
-		jira_link=""
-		if ! jira_link=$(write_commit_tracker_file \
-			"${CHECK_JIRA}" "${commit}" "${commit_dir}/jira.txt" write_jira_details "JIRA"); then
-			failed=1
-		fi
+		write_commit_tool_file jira_link \
+			"${CHECK_JIRA}" "${commit}" "${commit_dir}/jira.txt" write_jira_details jira
 
-		linear_link=""
-		if ! linear_link=$(write_commit_tracker_file \
-			"${CHECK_LINEAR}" "${commit}" "${commit_dir}/linear.txt" write_linear_details "Linear"); then
-			failed=1
-		fi
+		write_commit_tool_file linear_link \
+			"${CHECK_LINEAR}" "${commit}" "${commit_dir}/linear.txt" write_linear_details linear
 
 		github_link=""
 		if [[ "${CHECK_GITHUB}" == "true" ]]; then
 			pr_file="${commit_dir}/pr.json"
 			if needs_pr_refresh "${pr_file}"; then
-				if ! write_pr_details "${commit}" "${pr_file}"; then
+				if skip_tool_on_failure github write_pr_details "${commit}" "${pr_file}"; then
+					github_link="${pr_file}"
+				else
 					echo "process_commits:: Failed to write PR details for ${commit}" >&2
-					failed=1
 				fi
+			else
+				github_link="${pr_file}"
 			fi
-			github_link="${pr_file}"
 		fi
 
 		print_section
@@ -356,31 +547,6 @@ process_commits() {
 	done
 
 	[[ "${failed}" -ne 0 ]] && return 1
-
-	return 0
-}
-
-# Verifies Coworker MCP and prints the meetings output path plus skill instructions
-#
-# Side Effects:
-# - Creates OUTPUT_PATH/meetings when missing
-# - Writes meetings path, window, and skill paths to stdout
-#
-# Returns:
-# - 0 on success
-# - 1 on failure
-process_meetings() {
-	if [[ -z "${OUTPUT_PATH}" ]]; then
-		echo "process_meetings:: OUTPUT_PATH is not set" >&2
-		return 1
-	fi
-
-	if [[ -z "${PERIOD_START}" || -z "${PERIOD_END}" ]]; then
-		echo "process_meetings:: PERIOD_START and PERIOD_END are required for the coworker tool" >&2
-		return 1
-	fi
-
-	write_meetings_stub "${OUTPUT_PATH}/meetings" "${PERIOD_START}" "${PERIOD_END}" || return 1
 
 	return 0
 }
@@ -420,11 +586,6 @@ apply_repo() {
 		return 1
 	fi
 
-	local repos_root="${TELLME_REPOS_ROOT:-}"
-	if [[ "${REPO_PATH}" != /* && -n "${repos_root}" ]]; then
-		REPO_PATH="${repos_root%/}/${REPO_PATH}"
-	fi
-
 	return 0
 }
 
@@ -437,6 +598,7 @@ apply_repo() {
 # - Sets REPO_PATH, BRANCH, REPO_NAME, COMMITS, OUTPUT_PATH, and sanitized names
 # - Prints === spec (N commit|commits) === after commits are collected
 # - Creates commit and meeting output directories
+# - May disable github or coworker after mid-run failures
 #
 # Returns:
 # - 0 on success
@@ -471,11 +633,20 @@ process_repo() {
 	process_commits || return 1
 
 	if [[ "${CHECK_GITHUB}" == "true" ]]; then
-		process_involvement_prs || return 1
+		if ! skip_tool_on_failure github process_involvement_prs; then
+			echo "process_repo:: Failed involvement PRs" >&2
+		fi
 	fi
 
 	if [[ "${CHECK_COWORKER}" == "true" ]]; then
-		process_meetings || return 1
+		local meetings_dir="${OUTPUT_PATH}/meetings"
+		if ! mkdir -p "${meetings_dir}" 2>/dev/null; then
+			echo "process_repo:: Failed to create meetings directory: ${meetings_dir}" >&2
+			disable_tools coworker
+		elif ! skip_tool_on_failure coworker write_meetings_stub \
+			"${meetings_dir}" "${PERIOD_START}" "${PERIOD_END}"; then
+			echo "process_repo:: Failed meetings stub" >&2
+		fi
 	fi
 
 	return 0
@@ -518,7 +689,7 @@ process_involvement_prs() {
 	return 0
 }
 
-# Loads shared print, git, util, commits, and tool libraries relative to this script
+# Loads shared print, git, util, config, commits, and tool libraries relative to this script
 #
 # Side Effects:
 # - Sources tools/lib/*.sh and tools/{github,jira,linear,coworker}.sh into the current shell
@@ -538,6 +709,7 @@ _setup() {
 		"${script_dir}/tools/lib/print.sh" \
 		"${script_dir}/tools/lib/util.sh" \
 		"${script_dir}/tools/lib/git.sh" \
+		"${script_dir}/tools/lib/config.sh" \
 		"${script_dir}/tools/lib/commits.sh"; do
 		if [[ ! -f "${lib_file}" ]]; then
 			echo "_setup:: shared library not found: ${lib_file}" >&2
@@ -569,82 +741,25 @@ main() {
 
 	COMMITS=()
 	REPOS=()
+	TOOLS=""
+	INPUT_HELP=0
 
-	local tools=""
-	while [[ $# -gt 0 ]]; do
-		case "$1" in
-		-h | --help)
-			usage
-			return 0
-			;;
-		-a | --author)
-			AUTHOR="$2"
-			shift 2
-			;;
-		--github-user)
-			if [[ -z "${2:-}" || "$2" == -* ]]; then
-				echo "main:: --github-user requires a GitHub username" >&2
-				return 1
-			fi
-			GITHUB_USER="$2"
-			shift 2
-			;;
-		--range)
-			if [[ -n "${RANGE_DATE1}" ]]; then
-				echo "main:: --range option can only be used once" >&2
-				return 1
-			fi
-			RANGE_DATE1="$2"
-			shift 2
-			if [[ $# -gt 0 && "$1" != -* ]]; then
-				RANGE_DATE2="$1"
-				shift 1
-			fi
-			;;
-		--tools)
-			if [[ -z "${2:-}" || "$2" == -* ]]; then
-				echo "main:: --tools requires a comma-separated list of jira,linear,github,coworker" >&2
-				return 1
-			fi
-			tools="$2"
-			shift 2
-			;;
-		--repo)
-			if [[ -z "${2:-}" || "$2" == -* ]]; then
-				echo "main:: --repo requires path:branch" >&2
-				return 1
-			fi
-			REPOS+=("$2")
-			shift 2
-			;;
-		*)
-			echo "main:: Unknown option '$1'" >&2
-			echo "main:: Use '$(basename "$0") --help' for usage information" >&2
-			return 1
-			;;
-		esac
-	done
+	process_input "$@" || return 1
+	[[ "${INPUT_HELP}" -eq 1 ]] && return 0
 
-	configure_tools "${tools}" || return 1
+	configure_tools "${TOOLS}" || return 1
 
 	if [[ -z "${OUTPUT_DIR}" ]]; then
 		OUTPUT_DIR="${HOME}/${DEFAULT_OUTPUT_DIR}"
 	fi
 
-	if [[ -z "${RANGE_DATE1}" ]]; then
-		echo "main:: --range is required" >&2
-		usage
-		return 1
-	fi
-
-	if [[ "${#REPOS[@]}" -eq 0 ]]; then
-		echo "main:: at least one --repo is required" >&2
-		return 1
-	fi
-
 	set_default_author || return 1
 	determine_period_dates || return 1
-	validate_enabled_tools || return 1
+
+	if ! validate_enabled_tools; then
+		confirm_proceed_without_tools || return 1
+		disable_tools "${FAILED_TOOLS[@]}" || return 1
+	fi
 
 	local spec
 	local failed=0
