@@ -689,7 +689,7 @@ process_involvement_prs() {
 	return 0
 }
 
-# Loads shared print, git, util, config, commits, and tool libraries relative to this script
+# Loads shared print, util, git, tickets, config, commits, and tool libraries
 #
 # Side Effects:
 # - Sources tools/lib/*.sh and tools/{github,jira,linear,coworker}.sh into the current shell
@@ -709,6 +709,7 @@ _setup() {
 		"${script_dir}/tools/lib/print.sh" \
 		"${script_dir}/tools/lib/util.sh" \
 		"${script_dir}/tools/lib/git.sh" \
+		"${script_dir}/tools/lib/tickets.sh" \
 		"${script_dir}/tools/lib/config.sh" \
 		"${script_dir}/tools/lib/commits.sh"; do
 		if [[ ! -f "${lib_file}" ]]; then

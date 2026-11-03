@@ -1,0 +1,34 @@
+name: Commits
+
+# Listen for edited so a title typo fix re-runs the check.
+on:
+  pull_request:
+    types: [edited, opened, reopened, synchronize]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  commit-messages:
+    name: Commit messages
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Squash-merge lands the PR title as the commit subject, so lint the title.
+      - name: Lint pr title
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          source tools/lib/tickets.sh
+          printf 'title: %s\n' "${TITLE}"
+          validate_subject_prefix "${TITLE}"

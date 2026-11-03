@@ -45,6 +45,7 @@ tools/
   lib/
     git.sh                Shared git helpers
     util.sh               Shared micro-helpers
+    tickets.sh            Ticket ID extract and subject-prefix matching
     config.sh             tell-me-about.json resolve and load
     commits.sh            Commit selection and period helpers
     print.sh              Summary card helpers only

@@ -49,8 +49,9 @@ bats_resolve_paths() {
 # - 0 always
 bats_unset_load_guards() {
 	unset -f print_init print_section print_field print_paths 2>/dev/null || true
-	unset -f require_cmd array_contains extract_ticket_ids write_ticket_details \
-		2>/dev/null || true
+	unset -f require_cmd array_contains 2>/dev/null || true
+	unset -f extract_ticket_ids_from_text validate_subject_prefix \
+		extract_ticket_ids write_ticket_details 2>/dev/null || true
 	unset -f git_cmd resolve_remote_owner_repo git_validate_repo 2>/dev/null || true
 	unset -f resolve_tellme_config expand_repo_path load_tellme_config 2>/dev/null || true
 	unset -f parse_date determine_period_dates sanitize_names \
@@ -66,7 +67,7 @@ bats_unset_load_guards() {
 # - $1: optional tool script path; when set, sourced with the direct-run guard
 #
 # Side Effects:
-# - Sources print, util, and git libs
+# - Sources print, util, git, tickets, config, and commits libs
 # - Optionally sources the tool script
 #
 # Returns:
@@ -83,6 +84,8 @@ bats_source_libs() {
 	source "${GIT_ROOT}/tools/lib/util.sh"
 	# shellcheck disable=SC1090
 	source "${GIT_ROOT}/tools/lib/git.sh"
+	# shellcheck disable=SC1090
+	source "${GIT_ROOT}/tools/lib/tickets.sh"
 	# shellcheck disable=SC1090
 	source "${GIT_ROOT}/tools/lib/config.sh"
 	# shellcheck disable=SC1090
